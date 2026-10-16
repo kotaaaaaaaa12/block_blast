@@ -1,3 +1,4 @@
+import { initRankingUI } from "./ranking-client.js";
 import { gameState } from "./gameStates.js";
 import { img, loadAssets } from "./assets.js";
 import { preloadAllAudio, initAudioUnlock } from "./audio.js";
@@ -22,7 +23,8 @@ const GAME_HEIGHT = gameState.GAME_HEIGHT;
 function initCanvas() {
   const dpr = window.devicePixelRatio || 1;
 
-  const scale = Math.min(window.innerWidth / GAME_WIDTH, window.innerHeight / GAME_HEIGHT);
+  const stage = document.getElementById("game-stage");
+  const scale = Math.min(stage.clientWidth / GAME_WIDTH, stage.clientHeight / GAME_HEIGHT);
   const displayWidth = GAME_WIDTH * scale;
   const displayHeight = GAME_HEIGHT * scale;
 
@@ -100,6 +102,7 @@ function gameLoop() {
 }
 
 function initGame() {
+  initRankingUI();
   loadAssets().then(async () => {
     gameState.init(canvas, ctx, img.uiSheet, img.uiGameSheet);
     initCanvas();
@@ -110,6 +113,7 @@ function initGame() {
     intiGrid(img.gridOutline);
     initHand();
     window.addEventListener("resize", initCanvas);
+    window.visualViewport?.addEventListener("resize", initCanvas);
     gameLoop();
   });
 }

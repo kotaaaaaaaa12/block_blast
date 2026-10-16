@@ -2,18 +2,64 @@
 <html lang="en">
   <head>
     <meta charset="UTF-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
     <link
       href="https://fonts.googleapis.com/css2?family=Fredoka:wght@700&display=swap"
       rel="stylesheet"
     />
     <link rel="stylesheet" href="./src/style.css" />
+    <link rel="stylesheet" href="./src/ranking.css" />
     <title>Block Blast</title>
     <link rel="icon" type="image/png" sizes="32x32" href="./favicon-32x32.png" />
     <link rel="apple-touch-icon" sizes="180x180" href="./apple-touch-icon.png" />
   </head>
   <body>
-    <canvas id="gameCanvas"></canvas>
+    <header class="ranking-bar">
+      <span class="ranking-brand">Block Blast</span>
+      <nav aria-label="Community">
+        <button id="open-rankings" type="button">Rankings</button>
+        <button id="open-submit" type="button" disabled>Submit score</button>
+      </nav>
+    </header>
+    <main id="game-stage"><canvas id="gameCanvas" aria-label="Block Blast game"></canvas></main>
+    <dialog id="ranking-dialog" aria-labelledby="ranking-heading">
+      <div class="ranking-sheet">
+        <header class="ranking-heading-row">
+          <h1 id="ranking-heading">Rankings</h1>
+          <button type="button" id="close-rankings" aria-label="Close rankings">Close</button>
+        </header>
+        <section id="submit-panel" hidden>
+          <p class="result-caption">Your finished game</p>
+          <p id="finished-score" class="finished-score">0</p>
+          <form id="score-form">
+            <label for="player-name">Display name</label>
+            <div class="submission-row">
+              <input id="player-name" name="name" autocomplete="nickname" maxlength="40" placeholder="Enter your name" required />
+              <button id="submit-score" type="submit">Submit</button>
+            </div>
+            <p class="ranking-note">Your name and score will be public. Your best score appears once per period.</p>
+          </form>
+          <p id="submission-status" role="status" aria-live="polite"></p>
+        </section>
+        <nav class="ranking-tabs" aria-label="Ranking period">
+          <button type="button" data-period="all" aria-pressed="true">All time</button>
+          <button type="button" data-period="today" aria-pressed="false">Today</button>
+          <button type="button" data-period="week" aria-pressed="false">This week</button>
+        </nav>
+        <div class="ranking-meta">
+          <p id="ranking-summary" role="status" aria-live="polite">Loading rankings…</p>
+          <button type="button" id="refresh-rankings">Refresh</button>
+        </div>
+        <p id="my-ranking" hidden></p>
+        <div class="ranking-table-wrap">
+          <table class="ranking-table">
+            <thead><tr><th scope="col">Rank</th><th scope="col">Player</th><th scope="col">Score</th></tr></thead>
+            <tbody id="ranking-entries"></tbody>
+          </table>
+        </div>
+        <p class="ranking-note" id="ranking-calendar">Today and this week use Japan time. Each week starts on Monday.</p>
+      </div>
+    </dialog>
 
     <script type="module" src="./src/main.js"></script>
   </body>

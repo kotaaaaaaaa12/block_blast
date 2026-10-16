@@ -1,3 +1,4 @@
+import { scoreMove } from "./ranking-rules.js";
 import { gameState } from "./gameStates.js";
 import { spriteMap } from "./spriteMap.js";
 import { img } from "./assets.js";
@@ -9,84 +10,16 @@ const optionsBtn = spriteMap.gameUI.optionsBtn;
 const scoreTrophy = spriteMap.gameUI.trophy;
 const digits = spriteMap.digits;
 
-const SCORING = {
-  PLACEMENT_POINTS: 1,
-  LINE_BASE: 10,
-  COMBO_STEP: 1,
-  RESET_AFTER_MISSES: 3,
-
-  MULTI_LINE_BONUS: {
-    1: 0,
-    2: 10,
-    3: 30,
-    4: 60,
-    5: 100,
-    6: 150,
-  },
-  EXTRA_BONUS: 50,
-};
-
-function getMultiLineBonus(linesCleared) {
-  if (linesCleared <= 0) return 0;
-  if (linesCleared <= 6) return SCORING.MULTI_LINE_BONUS[linesCleared];
-
-  return SCORING.MULTI_LINE_BONUS[6] + (linesCleared - 6) * SCORING.EXTRA_BONUS;
-}
-
-function getComboMultiplier(streak) {
-  const effectiveStreak = Math.max(0, streak - 1);
-  return 1 + effectiveStreak * SCORING.COMBO_STEP;
-}
-
 function applyMoveScoring(placedBlocks, linesCleared) {
-  let placementPoints = Math.max(0, placedBlocks) * SCORING.PLACEMENT_POINTS;
-  let clearPoints = 0;
-  let totalEarned = 0;
-
-  gameState.score += placementPoints;
-  totalEarned += placementPoints;
-
-  if (linesCleared > 0) {
-    gameState.movesSinceLastClear = 0;
-    gameState.lastMoveCleared = true;
-    gameState.streak += 1;
-
-    const comboMultiplier = getComboMultiplier(gameState.streak);
-    gameState.streakMultiplier = comboMultiplier;
-
-    const lineBasePoints = linesCleared * SCORING.LINE_BASE;
-    const multiLineBonus = getMultiLineBonus(linesCleared);
-    clearPoints = Math.round((lineBasePoints + multiLineBonus) * comboMultiplier);
-
-    gameState.score += clearPoints;
-    totalEarned += clearPoints;
-  } else {
-    gameState.lastMoveCleared = false;
-    gameState.movesSinceLastClear += 1;
-
-    if (gameState.movesSinceLastClear >= SCORING.RESET_AFTER_MISSES) {
-      gameState.streak = 0;
-      gameState.streakMultiplier = 1;
-      gameState.movesSinceLastClear = 0;
-    }
-  }
-
+  const result = scoreMove(gameState, Math.max(0, placedBlocks), linesCleared);
   if (gameState.score > gameState.bestScore) {
     gameState.isNewBest = true;
     gameState.bestScore = gameState.score;
     localStorage.setItem("blockBlastBestScore", gameState.bestScore);
   }
-
-  return {
-    placementPoints,
-    clearPoints,
-    linesCleared,
-    totalEarned,
-    streak: gameState.streak,
-    comboMultiplier: gameState.streakMultiplier,
-    total: gameState.score,
-  };
+  return result;
 }
+
 function getDigitWidth(digit) {
   return parseInt(digit) === 1
     ? layout.DIGIT_CONFIG.widths.narrow

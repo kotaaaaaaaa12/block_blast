@@ -1,0 +1,17 @@
+{
+  "name": "block-blast-workers-ranking",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "node scripts/build.mjs",
+    "dev": "npm run build && wrangler dev",
+    "deploy": "wrangler deploy",
+    "db:local": "wrangler d1 migrations apply DB --local",
+    "db:remote": "wrangler d1 migrations apply DB --remote",
+    "test": "node --test tests/*.test.mjs"
+  },
+  "devDependencies": {
+    "wrangler": "4.151.0"
+  }
+}

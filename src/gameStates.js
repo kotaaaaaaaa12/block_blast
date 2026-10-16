@@ -1,3 +1,4 @@
+import { beginRankedRun, endRankedRun } from "./ranking-client.js";
 import { playSound } from "./audio.js";
 
 export const GameStates = {
@@ -98,6 +99,7 @@ class GameState {
     this.setState(GameStates.OPTIONS);
   }
   gameOver() {
+    endRankedRun(this.score);
     this.setState(GameStates.GAME_OVER);
     playSound("over");
 
@@ -108,6 +110,7 @@ class GameState {
   }
 
   reset() {
+    beginRankedRun();
     for (let r = 0; r < 8; r++) {
       for (let c = 0; c < 8; c++) {
         this.gridData[r][c] = null;

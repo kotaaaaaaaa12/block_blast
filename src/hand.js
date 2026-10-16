@@ -1,3 +1,4 @@
+import { beginRankedRun, recordHand, recordMove } from "./ranking-client.js";
 import { gameState } from "./gameStates.js";
 import {
   placeOnGrid,
@@ -351,6 +352,7 @@ function createHand() {
     const pick = candidates[Math.floor(Math.random() * topN)];
 
     gameState.hand = pick.hand;
+    recordHand(gameState.hand);
     recentShapeHistory = pick.names;
     // console.log(
     //   `Hand: [${pick.names.join(", ")}] | clears: ${pick.clears}, setup: ${pick.setup.toFixed(0)}, blocks: ${pick.totalBlocks}, score: ${pick.score.toFixed(1)} | fill: ${(fillPercent * 100).toFixed(0)}% | near-clear: ${nearClearCount} | candidates: ${candidates.length}`,
@@ -366,6 +368,7 @@ function createHand() {
   newShape.name = "DOT";
   tempHand.push(newShape);
   gameState.hand = tempHand;
+  recordHand(gameState.hand);
   recentShapeHistory = ["DOT"];
 }
 
@@ -480,6 +483,7 @@ function initDragControls() {
         const gridCol = Math.round((shapeTopLeftX - gridXOffSet) / CELL_SIZE);
 
         if (isValidPlacement(gameState.gridData, shape.template, gridRow, gridCol)) {
+          recordMove(shape, gridRow, gridCol);
           placeOnGrid(shape.template, gridRow, gridCol, shape.colorKey);
           removeFromHand(shape);
         } else {
@@ -494,6 +498,7 @@ function initDragControls() {
 }
 
 function initHand() {
+  beginRankedRun();
   createHand();
   initDragControls();
 }
