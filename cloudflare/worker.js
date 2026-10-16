@@ -16,8 +16,32 @@ export function ensureSchema(db) {
   }
   return ready;
 }
+const ERROR_CODES = new Map([
+  ["Choose all, today, or week.", "invalidPeriod"],
+  ["Enter a display name.", "invalidName"],
+  ["Use 1–20 characters without control characters or angle brackets.", "invalidName"],
+  ["Send application/json.", "invalidRequest"],
+  ["Missing request body.", "invalidRequest"],
+  ["This replay is too large.", "replayTooLarge"],
+  ["Invalid JSON request.", "invalidRequest"],
+  ["Use the game website to submit a score.", "wrongOrigin"],
+  ["Too many requests. Please try again later.", "rateLimited"],
+  ["Start a new game before submitting.", "invalidSession"],
+  ["Invalid or outdated game session. Start a new game.", "invalidSession"],
+  ["This game session is not available in this browser.", "invalidSession"],
+  ["This game session has expired. Start a new game.", "expiredSession"],
+  ["This game has already been submitted.", "alreadySubmitted"],
+  ["This game has an invalid or unsupported replay length.", "replayTooLarge"],
+  ["Invalid replay event.", "invalidReplay"],
+  ["Invalid block tray.", "invalidReplay"],
+  ["Invalid block placement.", "invalidReplay"],
+  ["A block overlaps or leaves the board.", "invalidReplay"],
+  ["The submitted score does not match the replay.", "invalidReplay"],
+  ["Finish the game before submitting a score.", "unfinishedGame"],
+  ["Rankings are not configured yet.", "unavailable"],
+]);
 class ApiError extends Error {
-  constructor(status, message) { super(message); this.status = status; }
+  constructor(status, message) { super(message); this.status = status; this.code = ERROR_CODES.get(message) || "requestFailed"; }
 }
 function json(data, status = 200, extraHeaders = {}) {
   return Response.json(data, { status, headers: {
@@ -120,10 +144,28 @@ async function newSession(request, env) {
     "Set-Cookie": identity.cookie,
   });
 }
+async function profile(request, env) {
+  const identity = await playerIdentity(request, true);
+  if (request.method === "POST") {
+    await limit(env.DB, identity.id, "profile");
+    const body = await readJson(request);
+    const name = normalizeName(body.name);
+    await env.DB.prepare(`INSERT INTO ranking_players (player_id, display_name, updated_at) VALUES (?, ?, ?)
+      ON CONFLICT(player_id) DO UPDATE SET display_name = excluded.display_name, updated_at = excluded.updated_at`)
+      .bind(identity.id, name, Date.now()).run();
+    return json({ name, profileExists: true }, 200, { "Set-Cookie": identity.cookie });
+  }
+  const current = await env.DB.prepare("SELECT display_name FROM ranking_players WHERE player_id = ?")
+    .bind(identity.id).first();
+  const legacy = current ? null : await env.DB.prepare(`SELECT display_name FROM ranking_scores
+    WHERE player_id = ? ORDER BY achieved_at DESC LIMIT 1`).bind(identity.id).first();
+  return json({ name: current?.display_name || legacy?.display_name || null, profileExists: Boolean(current) }, 200,
+    { "Set-Cookie": identity.cookie });
+}
 const BEST_CTE = `WITH candidates AS (
-  SELECT player_id, display_name, score, achieved_at,
-    ROW_NUMBER() OVER (PARTITION BY player_id ORDER BY score DESC, achieved_at ASC) AS choice
-  FROM ranking_scores WHERE day >= ?
+  SELECT s.player_id, COALESCE(p.display_name, s.display_name) AS display_name, s.score, s.achieved_at,
+    ROW_NUMBER() OVER (PARTITION BY s.player_id ORDER BY s.score DESC, s.achieved_at ASC) AS choice
+  FROM ranking_scores s LEFT JOIN ranking_players p ON p.player_id = s.player_id WHERE s.day >= ?
 ), best AS (
   SELECT player_id, display_name, score, achieved_at FROM candidates WHERE choice = 1
 ), ranked AS (
@@ -164,9 +206,10 @@ async function submit(request, env) {
     .bind(body.runId, identity.id, tokenHash).first();
   if (!session) throw new ApiError(401, "This game session is not available in this browser.");
   if (session.expires_at < Date.now()) throw new ApiError(410, "This game session has expired. Start a new game.");
-  const replayHash = await digest(JSON.stringify([name, body.score, body.events]));
+  const replayHash = await digest(JSON.stringify([RULESET, body.score, body.events]));
+  const legacyHash = session.submitted_at === null ? null : await digest(JSON.stringify([session.display_name, body.score, body.events]));
   if (session.submitted_at !== null) {
-    if (session.replay_hash !== replayHash) throw new ApiError(409, "This game has already been submitted.");
+    if (session.replay_hash !== replayHash && session.replay_hash !== legacyHash) throw new ApiError(409, "This game has already been submitted.");
     return json({ saved: true, score: session.score, name: session.display_name, repeated: true });
   }
   let verified;
@@ -175,6 +218,8 @@ async function submit(request, env) {
   const now = Date.now();
   const day = periodStart("today", now, env.RANKING_TIMEZONE || "Asia/Tokyo");
   await env.DB.batch([
+    env.DB.prepare(`INSERT INTO ranking_players (player_id, display_name, updated_at) VALUES (?, ?, ?)
+      ON CONFLICT(player_id) DO NOTHING`).bind(identity.id, name, now),
     env.DB.prepare(`UPDATE ranking_runs SET submitted_at = ?, score = ?, display_name = ?, day = ?, replay_hash = ?
       WHERE id = ? AND player_id = ? AND token_hash = ? AND submitted_at IS NULL`)
       .bind(now, verified.score, name, day, replayHash, body.runId, identity.id, tokenHash),
@@ -203,16 +248,18 @@ export default {
         return json({ ready: true, ruleset: RULESET });
       }
       if (path === "/api/leaderboard" && request.method === "GET") return await leaderboard(request, env);
+      if (path === "/api/profile" && request.method === "GET") return await profile(request, env);
       if (request.method === "POST") {
         requireSameOrigin(request);
+        if (path === "/api/profile") return await profile(request, env);
         if (path === "/api/session") { await readJson(request); return await newSession(request, env); }
         if (path === "/api/scores") return await submit(request, env);
       }
-      return json({ error: "API route not found." }, 404);
+      return json({ error: "API route not found.", code: "notFound" }, 404);
     } catch (error) {
-      if (error instanceof ApiError) return json({ error: error.message }, error.status);
+      if (error instanceof ApiError) return json({ error: error.message, code: error.code }, error.status);
       console.error("Ranking API error:", error);
-      return json({ error: "Rankings are temporarily unavailable. You can keep playing and retry later." }, 503);
+      return json({ error: "Rankings are temporarily unavailable. You can keep playing and retry later.", code: "unavailable" }, 503);
     }
   },
   async scheduled(_event, env) {

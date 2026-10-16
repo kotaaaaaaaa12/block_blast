@@ -36,12 +36,12 @@ class TestDatabase {
   }
 }
 
-export function completeGame() {
+export function completeGame(seed = 841) {
   const board = Array.from({ length: 8 }, () => Array(8).fill(0));
   const state = { score: 0, streak: 0, streakMultiplier: 1, movesSinceLastClear: 0 };
   const names = Object.keys(SHAPES);
   const events = [];
-  let randomState = 841;
+  let randomState = seed;
   const random = n => {
     randomState = (Math.imul(randomState, 1664525) + 1013904223) >>> 0;
     return randomState % n;
@@ -144,7 +144,7 @@ test("session, score, idempotent retry, deduplication, and private identity work
   assert.match(response.headers.get("set-cookie"), /HttpOnly; SameSite=Lax/);
   assert.equal((await call("/api/scores", payload(session))).response.status, 200);
   assert.equal((await call("/api/scores", payload(session))).data.repeated, true);
-  assert.equal((await call("/api/scores", payload(session, { name: "Another" }))).response.status, 409);
+  assert.equal((await call("/api/scores", payload(session, { name: "Another" }))).data.repeated, true);
   const { data: session2 } = await call("/api/session", {});
   assert.equal((await call("/api/scores", payload(session2, { name: "Second name" }))).response.status, 200);
   const { data: ranking } = await call("/api/leaderboard?period=all");
@@ -227,4 +227,53 @@ test("automatic initialization preserves existing scores and retries a failed se
 test("the bundled initialization schema matches the canonical migration", () => {
   const sql = readFileSync(new URL("../migrations/0001_rankings.sql", import.meta.url), "utf8");
   assert.deepEqual(SCHEMA_STATEMENTS, sql.split(";").map(statement => statement.trim()).filter(Boolean));
+});
+
+
+test("a device profile renames every ranking while lower scores keep the personal best", async () => {
+  const env = environment();
+  const call = client(env);
+  const profile = await call("/api/profile");
+  assert.equal(profile.data.name, null);
+  assert.match(profile.response.headers.get("set-cookie"), /HttpOnly/);
+  assert.equal((await call("/api/profile", { name: "Original name" })).response.status, 200);
+  const games = Array.from({ length: 8 }, (_, i) => completeGame(i + 1)).sort((a, b) => a.score - b.score);
+  const low = games[0], high = games.at(-1);
+  assert.ok(high.score > low.score);
+  const lowSession = (await call("/api/session", {})).data;
+  assert.equal((await call("/api/scores", payload(lowSession, low))).response.status, 200);
+  assert.equal((await call("/api/leaderboard")).data.me.score, low.score);
+  const session1 = (await call("/api/session", {})).data;
+  assert.equal((await call("/api/scores", payload(session1, high))).response.status, 200);
+  const initial = (await call("/api/leaderboard?period=all")).data;
+  const achievedAt = initial.me.achievedAt;
+  assert.equal(initial.me.name, "Original name");
+  assert.equal(initial.me.score, high.score);
+  const session2 = (await call("/api/session", {})).data;
+  assert.equal((await call("/api/scores", payload(session2, low))).response.status, 200);
+  let ranking = (await call("/api/leaderboard?period=all")).data;
+  assert.equal(ranking.total, 1);
+  assert.equal(ranking.me.score, high.score);
+  assert.equal(ranking.me.achievedAt, achievedAt);
+  assert.equal((await call("/api/profile", { name: "新しい名前" })).response.status, 200);
+  for (const period of ["all", "today", "week"]) {
+    ranking = (await call(`/api/leaderboard?period=${period}`)).data;
+    assert.equal(ranking.me.name, "新しい名前");
+    assert.equal(ranking.me.score, high.score);
+  }
+  assert.equal((await call("/api/profile")).data.name, "新しい名前");
+  assert.equal((await call("/api/scores", payload(session1, { ...high, name: "Stale tab" }))).data.repeated, true);
+  assert.equal((await call("/api/leaderboard")).data.me.name, "新しい名前");
+});
+test("profile changes require the same origin and do not affect another browser", async () => {
+  const env = environment();
+  const one = client(env), two = client(env);
+  await one("/api/profile", { name: "First" });
+  await two("/api/profile", { name: "Second" });
+  assert.equal((await one("/api/profile", { name: "Hijack" }, { headers: { Origin: "https://other.example" } })).response.status, 403);
+  assert.equal((await one("/api/profile")).data.name, "First");
+  assert.equal((await two("/api/profile")).data.name, "Second");
+  const invalid = await one("/api/profile", { name: "<bad>" });
+  assert.equal(invalid.response.status, 400);
+  assert.equal(invalid.data.code, "invalidName");
 });

@@ -27,3 +27,8 @@ CREATE TABLE IF NOT EXISTS ranking_limits (
   expires_at INTEGER NOT NULL
 );
 CREATE INDEX IF NOT EXISTS ranking_limits_expiry ON ranking_limits(expires_at);
+CREATE TABLE IF NOT EXISTS ranking_players (
+  player_id TEXT PRIMARY KEY,
+  display_name TEXT NOT NULL,
+  updated_at INTEGER NOT NULL
+);

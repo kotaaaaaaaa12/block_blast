@@ -15,49 +15,64 @@
   </head>
   <body>
     <header class="ranking-bar">
-      <span class="ranking-brand">Block Blast</span>
-      <nav aria-label="Community">
-        <button id="open-rankings" type="button">Rankings</button>
-        <button id="open-submit" type="button" disabled>Submit score</button>
-      </nav>
+      <div class="ranking-toolbar">
+        <span class="ranking-brand">Block Blast</span>
+        <nav data-i18n-aria="community" aria-label="Community">
+          <button id="open-rankings" type="button" data-i18n="rankings">Rankings</button>
+          <button id="open-profile" type="button" data-i18n="playerName">Player name</button>
+          <select id="ranking-language" data-i18n-aria="language" aria-label="Language">
+            <option value="auto" data-i18n="auto">Auto</option>
+            <option value="en" data-i18n="english">English</option>
+            <option value="ja" data-i18n="japanese">Japanese</option>
+          </select>
+        </nav>
+      </div>
+      <p class="sync-status" data-sync-status role="status" aria-live="polite"></p>
     </header>
-    <main id="game-stage"><canvas id="gameCanvas" aria-label="Block Blast game"></canvas></main>
-    <dialog id="ranking-dialog" aria-labelledby="ranking-heading">
+    <main id="game-stage"><canvas id="gameCanvas" data-i18n-aria="game" aria-label="Block Blast game"></canvas></main>
+    <dialog id="ranking-dialog" class="community-dialog" aria-labelledby="ranking-heading">
       <div class="ranking-sheet">
         <header class="ranking-heading-row">
-          <h1 id="ranking-heading">Rankings</h1>
-          <button type="button" id="close-rankings" aria-label="Close rankings">Close</button>
+          <h1 id="ranking-heading" tabindex="-1" autofocus data-i18n="rankings">Rankings</h1>
+          <button type="button" id="close-rankings" data-close-dialog data-i18n="close">Close</button>
         </header>
-        <section id="submit-panel" hidden>
-          <p class="result-caption">Your finished game</p>
-          <p id="finished-score" class="finished-score">0</p>
-          <form id="score-form">
-            <label for="player-name">Display name</label>
-            <div class="submission-row">
-              <input id="player-name" name="name" autocomplete="nickname" maxlength="40" placeholder="Enter your name" required />
-              <button id="submit-score" type="submit">Submit</button>
-            </div>
-            <p class="ranking-note">Your name and score will be public. Your best score appears once per period.</p>
-          </form>
-          <p id="submission-status" role="status" aria-live="polite"></p>
-        </section>
-        <nav class="ranking-tabs" aria-label="Ranking period">
-          <button type="button" data-period="all" aria-pressed="true">All time</button>
-          <button type="button" data-period="today" aria-pressed="false">Today</button>
-          <button type="button" data-period="week" aria-pressed="false">This week</button>
+        <p class="ranking-note" data-i18n="autoNote"></p>
+        <p class="sync-status" data-sync-status role="status" aria-live="polite"></p>
+        <button id="retry-sync" type="button" hidden data-i18n="retry">Retry now</button>
+        <nav class="ranking-tabs" data-i18n-aria="period" aria-label="Ranking period">
+          <button type="button" data-period="all" aria-pressed="true" data-i18n="all">All time</button>
+          <button type="button" data-period="today" aria-pressed="false" data-i18n="today">Today</button>
+          <button type="button" data-period="week" aria-pressed="false" data-i18n="week">This week</button>
         </nav>
         <div class="ranking-meta">
-          <p id="ranking-summary" role="status" aria-live="polite">Loading rankings…</p>
-          <button type="button" id="refresh-rankings">Refresh</button>
+          <p id="ranking-summary" role="status" aria-live="polite"></p>
+          <button type="button" id="refresh-rankings" data-i18n="refresh">Refresh</button>
         </div>
         <p id="my-ranking" hidden></p>
         <div class="ranking-table-wrap">
           <table class="ranking-table">
-            <thead><tr><th scope="col">Rank</th><th scope="col">Player</th><th scope="col">Score</th></tr></thead>
+            <thead><tr><th scope="col" data-i18n="rank">Rank</th><th scope="col" data-i18n="player">Player</th><th scope="col" data-i18n="score">Score</th></tr></thead>
             <tbody id="ranking-entries"></tbody>
           </table>
         </div>
-        <p class="ranking-note" id="ranking-calendar">Today and this week use Japan time. Each week starts on Monday.</p>
+        <p class="ranking-note" id="ranking-calendar"></p>
+      </div>
+    </dialog>
+    <dialog id="profile-dialog" class="community-dialog" aria-labelledby="profile-heading">
+      <div class="ranking-sheet">
+        <header class="ranking-heading-row">
+          <h1 id="profile-heading" tabindex="-1" autofocus data-i18n="nameTitle">Player name</h1>
+          <button type="button" id="close-profile" data-close-dialog data-i18n="close">Close</button>
+        </header>
+        <p class="ranking-note" data-i18n="nameNote"></p>
+        <form id="profile-form" novalidate>
+          <label for="player-name" data-i18n="nameLabel">Display name</label>
+          <div class="submission-row">
+            <input id="player-name" name="name" autocomplete="nickname" maxlength="40" data-i18n-placeholder="namePlaceholder" placeholder="Enter your name" />
+            <button id="save-name" type="submit" data-i18n="saveName">Save name</button>
+          </div>
+        </form>
+        <p id="profile-status" role="status" aria-live="polite"></p>
       </div>
     </dialog>
 
