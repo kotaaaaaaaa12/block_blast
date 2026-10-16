@@ -334,6 +334,16 @@ export function initRankingUI() {
     const button = event.target.closest("button");
     if (button && !keyboardNavigation) button.blur();
   });
+  document.getElementById("ranking-language").addEventListener("change", event => {
+    const select = event.currentTarget;
+    if (!keyboardNavigation) {
+      select.blur();
+      // Native pickers can restore focus as they finish closing.
+      requestAnimationFrame(() => {
+        if (!keyboardNavigation && document.activeElement === select) select.blur();
+      });
+    }
+  });
   document.getElementById("open-rankings").addEventListener("click", openRankings);
   document.getElementById("open-profile").addEventListener("click", openProfile);
   document.querySelectorAll("[data-close-dialog]").forEach(button => {
