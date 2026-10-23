@@ -27,6 +27,8 @@ let loadVersion = 0;
 let lastRanking = null;
 let rankingError = null;
 let rankingLoading = false;
+let rankingFetchedAt = 0;
+let rankingRefreshTimer = null;
 let syncState = { key: playerName ? "syncReady" : "syncNeedName", error: false };
 let profileState = { key: "", error: false };
 let keyboardNavigation = false;
@@ -42,8 +44,8 @@ function store(key, value) {
 function removeStored(key) {
   try { localStorage.removeItem(key); } catch {}
 }
-function calendarDay(now = Date.now()) {
-  return new Intl.DateTimeFormat("en-CA", { timeZone: "Asia/Tokyo", year: "numeric", month: "2-digit", day: "2-digit" }).format(new Date(now));
+function calendarDay(now = Date.now(), timezone = "Asia/Tokyo") {
+  return new Intl.DateTimeFormat("en-CA", { timeZone: timezone, year: "numeric", month: "2-digit", day: "2-digit" }).format(new Date(now));
 }
 function normalizeName(value) {
   return typeof value === "string" ? value.normalize("NFKC").trim().replace(/\s+/gu, " ") : "";
@@ -223,6 +225,18 @@ function openProfile() {
 function openRankings() {
   openDialog(document.getElementById("ranking-dialog"));
   loadRankings();
+  clearInterval(rankingRefreshTimer);
+  rankingRefreshTimer = setInterval(() => {
+    if (document.visibilityState !== "visible" || rankingLoading || !navigator.onLine) return;
+    const now = Date.now();
+    const timezone = lastRanking?.timezone || "Asia/Tokyo";
+    if (now - rankingFetchedAt >= 60000 || calendarDay(now, timezone) !== calendarDay(rankingFetchedAt, timezone)) {
+      loadRankings();
+    }
+  }, 1000);
+}
+function refreshOpenRankings() {
+  if (document.getElementById("ranking-dialog").open && document.visibilityState === "visible") loadRankings();
 }
 function renderRankings() {
   const summary = document.getElementById("ranking-summary");
@@ -255,6 +269,7 @@ function renderRankings() {
 }
 async function loadRankings() {
   const version = ++loadVersion;
+  const fetchedAt = Date.now();
   rankingLoading = true;
   rankingError = null;
   renderRankings();
@@ -267,6 +282,7 @@ async function loadRankings() {
     rankingError = error.code || "requestFailed";
   }
   if (version !== loadVersion) return;
+  rankingFetchedAt = fetchedAt;
   rankingLoading = false;
   renderRankings();
 }
@@ -351,6 +367,10 @@ export function initRankingUI() {
   });
   document.querySelectorAll(".community-dialog").forEach(dialog => {
     dialog.addEventListener("close", () => {
+      if (dialog.id === "ranking-dialog") {
+        clearInterval(rankingRefreshTimer);
+        rankingRefreshTimer = null;
+      }
       const activeDialog = document.querySelector(".community-dialog[open]");
       document.getElementById("gameCanvas").inert = Boolean(activeDialog);
       if (!activeDialog) {
@@ -369,7 +389,10 @@ export function initRankingUI() {
     document.querySelectorAll("[data-period]").forEach(tab => tab.setAttribute("aria-pressed", String(tab === button)));
     loadRankings();
   }));
-  window.addEventListener("online", () => { retryDelay = 5000; flushQueue(); });
+  window.addEventListener("online", () => { retryDelay = 5000; flushQueue(); refreshOpenRankings(); });
+  window.addEventListener("pageshow", refreshOpenRankings);
+  window.addEventListener("focus", refreshOpenRankings);
+  document.addEventListener("visibilitychange", refreshOpenRankings);
   window.addEventListener("storage", event => {
     if (event.key === NAME_KEY || event.key === NAME_SYNC_KEY) {
       playerName = readStored(NAME_KEY) || "";

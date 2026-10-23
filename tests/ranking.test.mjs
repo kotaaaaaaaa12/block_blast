@@ -130,6 +130,39 @@ test("Japan calendar changes day and week at local midnight", () => {
   assert.equal(periodStart("week", Date.parse("2026-10-18T14:59:59Z")), "2026-10-12");
   assert.equal(periodStart("week", Date.parse("2026-10-18T15:00:00Z")), "2026-10-19");
 });
+test("leaderboard drops previous-day and previous-week scores at Japan midnight", async t => {
+  let now = Date.parse("2026-10-18T14:59:59Z");
+  t.mock.method(Date, "now", () => now);
+  const env = environment();
+  const call = client(env);
+  const { data: session } = await call("/api/session", {});
+  assert.equal((await call("/api/scores", payload(session))).response.status, 200);
+  for (const period of ["all", "today", "week"]) {
+    const { data, response } = await call(`/api/leaderboard?period=${period}`);
+    assert.equal(data.total, 1);
+    assert.equal(data.me.score, game.score);
+    assert.equal(response.headers.get("Cache-Control"), "no-store");
+  }
+  now += 1000;
+  for (const period of ["today", "week"]) {
+    const { data } = await call(`/api/leaderboard?period=${period}`);
+    assert.equal(data.startsOn, "2026-10-19");
+    assert.equal(data.total, 0);
+    assert.deepEqual(data.entries, []);
+    assert.equal(data.me, null);
+  }
+  assert.equal((await call("/api/leaderboard?period=all")).data.me.score, game.score);
+  const lower = completeGame(12);
+  const { data: next } = await call("/api/session", {});
+  assert.equal((await call("/api/scores", payload(next, lower))).response.status, 200);
+  for (const period of ["today", "week"]) {
+    assert.equal((await call(`/api/leaderboard?period=${period}`)).data.me.score, lower.score);
+  }
+  now += 24 * 60 * 60 * 1000;
+  assert.equal((await call("/api/leaderboard?period=today")).data.total, 0);
+  assert.equal((await call("/api/leaderboard?period=week")).data.me.score, lower.score);
+  assert.equal((await call("/api/leaderboard?period=all")).data.me.score, Math.max(game.score, lower.score));
+});
 test("display names normalize Unicode and reject markup and control characters", () => {
   assert.equal(normalizeName("  Ｋｏｔａ  "), "Kota");
   assert.throws(() => normalizeName("<script>"));
