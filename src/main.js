@@ -10,9 +10,10 @@ import { drawGhost } from "./blocks.js";
 import { updateAndDrawScoring } from "./score.js";
 import { drawGameOverScreen, updateSilvering } from "./gameOver.js";
 import { drawOptionsDialog } from "./options.js";
-import { updateAndDrawParticles } from "./particles.js";
+import { updateAndDrawParticles, hasParticles } from "./particles.js";
 import { updateAndDrawFloatingTexts } from "./floatingText.js";
 import { spriteMap } from "./spriteMap.js";
+import { requestRender, startRenderLoop } from "./render-loop.js";
 
 const canvas = document.getElementById("gameCanvas");
 const ctx = canvas.getContext("2d");
@@ -28,15 +29,23 @@ function initCanvas() {
   const displayWidth = GAME_WIDTH * scale;
   const displayHeight = GAME_HEIGHT * scale;
 
-  canvas.width = displayWidth * dpr;
-  canvas.height = displayHeight * dpr;
+  // The artwork uses a 720 by 1280 logical canvas. Avoid oversampling it on tablets.
+  const renderScale = Math.min(dpr * scale, 1);
+  const width = Math.max(1, Math.round(GAME_WIDTH * renderScale));
+  const height = Math.max(1, Math.round(GAME_HEIGHT * renderScale));
+  if (canvas.width === width && canvas.height === height &&
+      canvas.style.width === `${displayWidth}px` && canvas.style.height === `${displayHeight}px`) return;
+
+  canvas.width = width;
+  canvas.height = height;
 
   canvas.style.width = `${displayWidth}px`;
   canvas.style.height = `${displayHeight}px`;
 
   ctx.setTransform(1, 0, 0, 1, 0, 0);
 
-  ctx.scale(dpr * scale, dpr * scale);
+  ctx.scale(width / GAME_WIDTH, height / GAME_HEIGHT);
+  requestRender();
 }
 
 function drawMenu(ctx) {
@@ -65,7 +74,7 @@ function drawMenu(ctx) {
   ctx.drawImage(img.plantBottom, layout.plantBottom.x, layout.plantBottom.y);
 }
 
-function gameLoop() {
+function drawFrame() {
   ctx.clearRect(0, 0, GAME_WIDTH, GAME_HEIGHT);
   ctx.drawImage(img.bg, 0, 0);
 
@@ -97,8 +106,19 @@ function gameLoop() {
       drawGameOverScreen(ctx);
     }
   }
-  
-  requestAnimationFrame(gameLoop);
+}
+
+function isAnimating() {
+  if (gameState.isMenu()) return false;
+  return gameState.isStartAnim() || hasParticles() || gameState.floatingTexts.length > 0 ||
+    gameState.displayScore < gameState.score || gameState.displayBestScore < gameState.bestScore ||
+    (gameState.silveringActive && !gameState.silveringDone) ||
+    (gameState.isOptions() && gameState.optionsAnimProgress < 1) ||
+    (gameState.isGameOver() && (gameState.gameOverAnimProgress < 1 || gameState.gameOverDisplayScore < gameState.score));
+}
+
+function isPaused() {
+  return document.hidden || Boolean(document.querySelector(".community-dialog[open]"));
 }
 
 function initGame() {
@@ -114,7 +134,14 @@ function initGame() {
     initHand();
     window.addEventListener("resize", initCanvas);
     window.visualViewport?.addEventListener("resize", initCanvas);
-    gameLoop();
+    startRenderLoop({ render: drawFrame, isAnimating, isPaused });
+    document.addEventListener("visibilitychange", requestRender);
+    window.addEventListener("pageshow", requestRender);
+    const dialogs = new MutationObserver(requestRender);
+    document.querySelectorAll(".community-dialog").forEach(dialog => {
+      dialogs.observe(dialog, { attributes: true, attributeFilter: ["open"] });
+    });
+    document.fonts?.ready.then(requestRender);
   });
 }
 

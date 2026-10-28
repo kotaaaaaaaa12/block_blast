@@ -15,6 +15,9 @@ const gridData = gameState.gridData;
 let gridXOffSet = 0;
 let gridYOffSet = 0;
 let outlineW = 0;
+let boardCache = null;
+let boardContext = null;
+const cachedCells = Array(GRID_SIZE * GRID_SIZE);
 
 function intiGrid(outlineImg) {
   const gridWidth = GRID_SIZE * CELL_SIZE;
@@ -25,6 +28,7 @@ function intiGrid(outlineImg) {
   gridYOffSet = boardY + (outlineImg.height - gridWidth) / 2;
 
   outlineW = outlineImg.width;
+  boardCache = null;
 }
 
 function getGridOffsets() {
@@ -32,6 +36,34 @@ function getGridOffsets() {
 }
 
 function drawGrid(ctx) {
+  let changed = !boardCache;
+  for (let row = 0; row < GRID_SIZE; row++) {
+    for (let col = 0; col < GRID_SIZE; col++) {
+      const index = row * GRID_SIZE + col;
+      if (cachedCells[index] !== gridData[row][col]) {
+        cachedCells[index] = gridData[row][col];
+        changed = true;
+      }
+    }
+  }
+  const x = Math.floor(gridXOffSet - 20);
+  const y = Math.floor(gridYOffSet - 20);
+  if (!boardCache) {
+    boardCache = document.createElement("canvas");
+    boardCache.width = boardCache.height = Math.ceil(Math.max(outlineW, GRID_SIZE * CELL_SIZE + 40));
+    boardContext = boardCache.getContext("2d");
+  }
+  if (changed) {
+    boardContext.clearRect(0, 0, boardCache.width, boardCache.height);
+    boardContext.save();
+    boardContext.translate(-x, -y);
+    drawGridContent(boardContext);
+    boardContext.restore();
+  }
+  ctx.drawImage(boardCache, x, y);
+}
+
+function drawGridContent(ctx) {
   const tile = spriteMap.board.tile;
   const gridBg = spriteMap.board.bg;
   ctx.drawImage(

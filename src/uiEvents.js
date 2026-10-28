@@ -3,6 +3,7 @@ import { layout } from "./layout.js";
 import { spriteMap } from "./spriteMap.js";
 import { createHand } from "./hand.js";
 import { playSound } from "./audio.js";
+import { requestRender } from "./render-loop.js";
 
 const createButton = (onClick, config = {}) => ({
   x: 0,
@@ -161,10 +162,12 @@ function isButtonClicked(btn, clickX, clickY) {
 
 function pressButton(layoutObj, action) {
   layoutObj.y += 2;
+  requestRender();
   playSound("click");
   setTimeout(() => {
     layoutObj.y -= 2;
     action();
+    requestRender();
   }, 100);
 }
 const STATE_CLICK_HANDLERS = {

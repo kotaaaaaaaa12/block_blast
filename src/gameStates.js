@@ -1,5 +1,6 @@
 import { beginRankedRun, endRankedRun } from "./ranking-client.js";
 import { playSound } from "./audio.js";
+import { requestRender } from "./render-loop.js";
 
 export const GameStates = {
   MENU: "MENU",
@@ -85,6 +86,7 @@ class GameState {
 
   setState(newState) {
     this.currentState = newState;
+    requestRender();
   }
 
   startAnim() {

@@ -11,6 +11,7 @@ import { drawBlock, BLOCK_COLORS } from "./blocks.js";
 import { SHAPES, CHUNKS, SPANNERS, FILLERS, HELPERS } from "./shapes.js";
 import { isPointInRect } from "./uiEvents.js";
 import { playSound } from "./audio.js";
+import { requestRender } from "./render-loop.js";
 
 const GAME_WIDTH = gameState.GAME_WIDTH;
 const GAME_HEIGHT = gameState.GAME_HEIGHT;
@@ -432,6 +433,7 @@ function initDragControls() {
           shape.scale = 1;
           shape.x = clickX - shape.dragOffsetX;
           shape.y = clickY - shape.dragOffsetY;
+          requestRender();
         }
       });
     }
@@ -443,6 +445,7 @@ function initDragControls() {
     const clickY = ((e.clientY - rect.top) / rect.height) * GAME_HEIGHT;
     gameState.hand.forEach((shape) => {
       if (shape.isDragging) {
+        requestRender();
         shape.x = clickX - shape.dragOffsetX;
         shape.y = clickY - shape.dragOffsetY;
 
@@ -470,6 +473,7 @@ function initDragControls() {
   });
 
   gameState.canvas.addEventListener("pointerup", () => {
+    requestRender();
     gameState.ghostPreview = null;
     gameState.hand.forEach((shape) => {
       if (shape.isDragging) {
@@ -494,6 +498,12 @@ function initDragControls() {
       shape.isDragging = false;
       shape.reset();
     });
+  });
+
+  gameState.canvas.addEventListener("pointercancel", () => {
+    gameState.ghostPreview = null;
+    gameState.hand.forEach(shape => { shape.isDragging = false; shape.reset(); });
+    requestRender();
   });
 }
 

@@ -148,4 +148,6 @@ function updateAndDrawParticles(ctx) {
   }
 }
 
-export { spawnJewels, spawnJewelsAt, updateAndDrawParticles };
+function hasParticles() { return particles.length > 0 || pendingExplosions.length > 0; }
+
+export { spawnJewels, spawnJewelsAt, updateAndDrawParticles, hasParticles };
