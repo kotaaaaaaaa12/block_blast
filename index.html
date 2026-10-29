@@ -34,7 +34,10 @@
       <div class="ranking-sheet">
         <header class="ranking-heading-row">
           <h1 id="ranking-heading" tabindex="-1" autofocus data-i18n="rankings">Rankings</h1>
-          <button type="button" id="close-rankings" data-close-dialog data-i18n="close">Close</button>
+          <div class="heading-actions">
+            <button type="button" id="open-admin" data-i18n="admin">Admin</button>
+            <button type="button" id="close-rankings" data-close-dialog data-i18n="close">Close</button>
+          </div>
         </header>
         <p class="ranking-note" data-i18n="autoNote"></p>
         <p class="sync-status" data-sync-status role="status" aria-live="polite"></p>
@@ -76,6 +79,63 @@
       </div>
     </dialog>
 
-    <script type="module" src="./src/main.js?v=20261028-performance-1"></script>
+    <dialog id="admin-dialog" class="community-dialog" aria-labelledby="admin-heading">
+      <div class="ranking-sheet">
+        <header class="ranking-heading-row">
+          <h1 id="admin-heading" tabindex="-1" autofocus data-i18n="admin">Admin</h1>
+          <button type="button" data-close-dialog data-i18n="close">Close</button>
+        </header>
+        <form id="admin-login-form" class="admin-form">
+          <label for="admin-password" data-i18n="adminPassword">Admin password</label>
+          <div class="submission-row">
+            <input id="admin-password" type="password" autocomplete="current-password" maxlength="1024" required />
+            <button type="submit" data-i18n="adminLogin">Sign in</button>
+          </div>
+        </form>
+        <section id="admin-editor" hidden>
+          <p class="ranking-note" data-i18n="adminNote"></p>
+          <form id="admin-filter" class="admin-form">
+            <label for="admin-search" data-i18n="adminSearch">Player name</label>
+            <input id="admin-search" type="search" maxlength="80" autocomplete="off" />
+            <div class="admin-filter-row">
+              <div>
+                <label for="admin-period" data-i18n="period">Ranking period</label>
+                <select id="admin-period">
+                  <option value="all" data-i18n="all">All time</option>
+                  <option value="today" data-i18n="today">Today</option>
+                  <option value="week" data-i18n="week">This week</option>
+                </select>
+              </div>
+              <div>
+                <label for="admin-day" data-i18n="adminDay">Date (optional)</label>
+                <input id="admin-day" type="date" />
+              </div>
+            </div>
+            <div class="admin-actions">
+              <button type="submit" data-i18n="adminSearchButton">Search</button>
+              <button id="admin-logout" type="button" data-i18n="adminLogout">Sign out</button>
+            </div>
+          </form>
+          <p id="admin-summary" class="ranking-note"></p>
+          <div id="admin-entries"></div>
+          <nav class="admin-actions" data-i18n-aria="adminPages" aria-label="Record pages">
+            <button id="admin-prev" type="button" data-i18n="adminPrev">Previous</button>
+            <button id="admin-next" type="button" data-i18n="adminNext">Next</button>
+          </nav>
+        </section>
+        <p id="admin-status" role="status" aria-live="polite"></p>
+      </div>
+    </dialog>
+    <dialog id="admin-confirm-dialog" class="community-dialog" aria-labelledby="admin-confirm-heading">
+      <div class="ranking-sheet">
+        <h1 id="admin-confirm-heading" tabindex="-1" autofocus data-i18n="adminConfirm">Confirm score change</h1>
+        <p id="admin-confirm-text"></p>
+        <div class="admin-actions">
+          <button type="button" data-close-dialog data-i18n="adminCancel">Cancel</button>
+          <button type="button" id="admin-confirm-save" data-i18n="adminSave">Save changes</button>
+        </div>
+      </div>
+    </dialog>
+    <script type="module" src="./src/main.js?v=20261029-admin-1"></script>
   </body>
 </html>

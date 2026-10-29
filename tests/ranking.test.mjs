@@ -86,18 +86,21 @@ export function completeGame(seed = 841) {
 const game = completeGame();
 
 function client(env) {
-  let cookie = "";
+  const cookies = new Map();
   return async (path, body, options = {}) => {
     const request = new Request(`https://game.example${path}`, {
       method: body === undefined ? "GET" : "POST",
-      headers: { ...(cookie ? { Cookie: cookie } : {}),
+      headers: { ...(cookies.size ? { Cookie: [...cookies].map(([key, value]) => `${key}=${value}`).join("; ") } : {}),
         ...(body === undefined ? {} : { "Content-Type": "application/json", Origin: "https://game.example" }),
         ...options.headers },
       ...(body === undefined ? {} : { body: JSON.stringify(body) }),
     });
     const response = await worker.fetch(request, env);
     const setCookie = response.headers.get("Set-Cookie");
-    if (setCookie) cookie = setCookie.split(";")[0];
+    if (setCookie) {
+      const pair = setCookie.split(";")[0];
+      cookies.set(pair.slice(0, pair.indexOf("=")), pair.slice(pair.indexOf("=") + 1));
+    }
     return { response, data: await response.json() };
   };
 }
@@ -309,4 +312,111 @@ test("profile changes require the same origin and do not affect another browser"
   const invalid = await one("/api/profile", { name: "<bad>" });
   assert.equal(invalid.response.status, 400);
   assert.equal(invalid.data.code, "invalidName");
+});
+
+test("admin authentication protects score editing, revokes logout, and expires with password rotation", async t => {
+  const env = { ...environment(), ADMIN_PASSWORD: 'test-only-admin-secret-strong' };
+  const admin = client(env), stranger = client(env);
+  assert.equal((await stranger('/api/admin/session')).data.authenticated, false);
+  assert.equal((await stranger('/api/admin/scores')).response.status, 401);
+  assert.equal((await admin('/api/admin/login', { password: 'incorrect' })).response.status, 401);
+  const login = await admin('/api/admin/login', { password: env.ADMIN_PASSWORD });
+  assert.equal(login.response.status, 200);
+  assert.match(login.response.headers.get('Set-Cookie'), /__Host-bb-admin=.*HttpOnly; SameSite=Strict; Max-Age=7200; Secure/);
+  assert.equal(JSON.stringify(login.data).includes(env.ADMIN_PASSWORD), false);
+  assert.equal((await admin('/api/admin/session')).data.authenticated, true);
+  assert.equal((await admin('/api/admin/scores')).response.status, 200);
+  assert.equal((await stranger('/api/admin/scores')).response.status, 401);
+  const oldCookie = login.response.headers.get('Set-Cookie').split(';')[0];
+  assert.equal((await admin('/api/admin/logout', {})).response.status, 200);
+  const revoked = await worker.fetch(new Request('https://game.example/api/admin/scores', { headers: { Cookie: oldCookie } }), env);
+  assert.equal(revoked.status, 401);
+  await admin('/api/admin/login', { password: env.ADMIN_PASSWORD });
+  env.ADMIN_PASSWORD = 'a-different-test-only-secret';
+  assert.equal((await admin('/api/admin/session')).data.authenticated, false);
+  assert.equal((await admin('/api/admin/scores')).response.status, 401);
+  await admin('/api/admin/login', { password: env.ADMIN_PASSWORD });
+  const now = Date.now(); t.mock.method(Date, 'now', () => now + 7200001);
+  assert.equal((await admin('/api/admin/scores')).response.status, 401);
+  await worker.scheduled({}, env);
+  assert.equal(env.DB.db.prepare('SELECT COUNT(*) AS n FROM ranking_admin_sessions').get().n, 0);
+});
+
+test("admin edits higher and lower daily scores, detects stale writes, audits, and preserves all periods", async () => {
+  const env = { ...environment(), ADMIN_PASSWORD: 'test-only-admin-secret-strong' };
+  const player = client(env), admin = client(env);
+  const { data: session } = await player('/api/session', {});
+  await player('/api/scores', payload(session));
+  await admin('/api/admin/login', { password: env.ADMIN_PASSWORD });
+  const list = (await admin('/api/admin/scores?search=Kota&period=today')).data;
+  assert.equal(list.total, 1);
+  let row = list.entries[0];
+  const edit = score => ({ playerId: row.playerId, day: row.day, achievedAt: row.achievedAt, expectedScore: row.score, score });
+  const high = edit(game.score + 500);
+  assert.equal((await admin('/api/admin/scores', high)).response.status, 200);
+  for (const period of ['all', 'today', 'week']) {
+    assert.equal((await player(`/api/leaderboard?period=${period}`)).data.me.score, game.score + 500);
+  }
+  assert.equal((await player('/api/scores', payload(session))).data.repeated, true);
+  assert.equal((await player('/api/leaderboard')).data.me.score, game.score + 500);
+  assert.equal((await admin('/api/admin/scores', high)).response.status, 409);
+  row = (await admin('/api/admin/scores')).data.entries[0];
+  assert.equal((await admin('/api/admin/scores', edit(1))).response.status, 200);
+  assert.equal((await player('/api/leaderboard')).data.me.score, 1);
+  const { data: next } = await player('/api/session', {});
+  assert.equal((await player('/api/scores', payload(next))).response.status, 200);
+  assert.equal((await player('/api/leaderboard')).data.me.score, game.score);
+  row = (await admin('/api/admin/scores')).data.entries[0];
+  const priorDay = new Date(Date.parse(row.day + 'T00:00:00Z') - 86400000).toISOString().slice(0, 10);
+  await env.DB.prepare('INSERT INTO ranking_scores (player_id, day, display_name, score, achieved_at) VALUES (?, ?, ?, ?, ?)')
+    .bind(row.playerId, priorDay, 'Kota', 50, row.achievedAt - 86400000).run();
+  assert.equal((await admin('/api/admin/scores', edit(0))).response.status, 200);
+  assert.equal((await player('/api/leaderboard?period=today')).data.me, null);
+  assert.equal((await player('/api/leaderboard?period=all')).data.me.score, 50);
+  assert.equal((await admin(`/api/admin/scores?day=${priorDay}`)).data.total, 1);
+  const audit = env.DB.db.prepare('SELECT previous_score, score FROM ranking_admin_edits ORDER BY created_at, rowid').all();
+  assert.equal(audit.length, 3);
+  assert.deepEqual(audit.map(r => r.score), [game.score + 500, 1, 0]);
+  const publicRanking = JSON.stringify((await player('/api/leaderboard')).data);
+  assert.equal(publicRanking.includes(row.playerId), false);
+});
+
+test("admin rejects cross-origin requests, malformed edits, and brute-force login attempts", async () => {
+  const env = { ...environment(), ADMIN_PASSWORD: 'test-only-admin-secret-strong' };
+  const call = client(env);
+  assert.equal((await call('/api/admin/login', { password: env.ADMIN_PASSWORD }, { headers: { Origin: 'https://other.example' } })).response.status, 403);
+  const missingOrigin = await worker.fetch(new Request('https://game.example/api/admin/login', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ password: env.ADMIN_PASSWORD }),
+  }), env);
+  assert.equal(missingOrigin.status, 403);
+  await call('/api/admin/login', { password: env.ADMIN_PASSWORD });
+  for (const score of [-1, 0.5, '200', 2147483648, null]) {
+    assert.equal((await call('/api/admin/scores', { playerId: 'a'.repeat(64), day: '2026-10-29', expectedScore: 100, achievedAt: 1, score })).response.status, 400);
+  }
+  assert.equal((await call('/api/admin/scores?day=2026-02-30')).response.status, 400);
+  assert.equal((await call('/api/admin/scores?page=-1')).response.status, 400);
+  assert.equal((await call('/api/admin/scores', {}, { headers: { Origin: 'https://other.example' } })).response.status, 403);
+  assert.equal(env.DB.db.prepare('SELECT COUNT(*) AS n FROM ranking_admin_edits').get().n, 0);
+  const limited = client({ ...environment(), ADMIN_PASSWORD: 'test-only-admin-secret-strong' });
+  for (let i = 0; i < 10; i++) assert.equal((await limited('/api/admin/login', { password: 'wrong' })).response.status, 401);
+  assert.equal((await limited('/api/admin/login', { password: 'test-only-admin-secret-strong' })).response.status, 429);
+  const disabled = client(environment());
+  assert.equal((await disabled('/api/admin/session')).data.configured, false);
+  assert.equal((await disabled('/api/admin/login', { password: '' })).response.status, 503);
+  assert.equal((await disabled('/api/leaderboard')).response.status, 200);
+});
+
+test("admin paginates and searches literal names without exposing additional records", async () => {
+  const env = { ...environment(), ADMIN_PASSWORD: 'test-only-admin-secret-strong' };
+  await ensureSchema(env.DB);
+  const today = periodStart('today');
+  for (let i = 0; i < 35; i++) await env.DB.prepare('INSERT INTO ranking_scores VALUES (?, ?, ?, ?, ?)')
+    .bind(i.toString(16).padStart(64, '0'), today, i === 1 ? '100%_Player' : `Player ${i}`, i + 1, i + 1).run();
+  const call = client(env); await call('/api/admin/login', { password: env.ADMIN_PASSWORD });
+  const first = (await call('/api/admin/scores')).data;
+  const second = (await call('/api/admin/scores?page=2')).data;
+  assert.equal(first.total, 35); assert.equal(first.entries.length, 30); assert.equal(second.entries.length, 5);
+  assert.equal(new Set([...first.entries, ...second.entries].map(r => r.playerId)).size, 35);
+  assert.equal((await call('/api/admin/scores?search=%25_')).data.total, 1);
+  assert.equal((await call('/api/admin/scores?search=%27%20OR%201%3D1--')).data.total, 0);
 });

@@ -7,5 +7,8 @@ export const SCHEMA_STATEMENTS = [
   "CREATE INDEX IF NOT EXISTS ranking_scores_score ON ranking_scores(score DESC, achieved_at)",
   "CREATE TABLE IF NOT EXISTS ranking_limits (\n  key TEXT PRIMARY KEY,\n  hits INTEGER NOT NULL,\n  expires_at INTEGER NOT NULL\n)",
   "CREATE INDEX IF NOT EXISTS ranking_limits_expiry ON ranking_limits(expires_at)",
-  "CREATE TABLE IF NOT EXISTS ranking_players (\n  player_id TEXT PRIMARY KEY,\n  display_name TEXT NOT NULL,\n  updated_at INTEGER NOT NULL\n)"
+  "CREATE TABLE IF NOT EXISTS ranking_players (\n  player_id TEXT PRIMARY KEY,\n  display_name TEXT NOT NULL,\n  updated_at INTEGER NOT NULL\n)",
+  "CREATE TABLE IF NOT EXISTS ranking_admin_sessions (\n  token_hash TEXT PRIMARY KEY,\n  secret_hash TEXT NOT NULL,\n  expires_at INTEGER NOT NULL\n)",
+  "CREATE INDEX IF NOT EXISTS ranking_admin_sessions_expiry ON ranking_admin_sessions(expires_at)",
+  "CREATE TABLE IF NOT EXISTS ranking_admin_edits (\n  id TEXT PRIMARY KEY,\n  player_id TEXT NOT NULL,\n  day TEXT NOT NULL,\n  previous_score INTEGER NOT NULL,\n  score INTEGER NOT NULL,\n  created_at INTEGER NOT NULL\n)"
 ];

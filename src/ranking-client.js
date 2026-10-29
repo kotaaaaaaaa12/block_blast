@@ -1,6 +1,7 @@
 import { MAX_EVENTS, RULESET } from "./ranking-rules.js";
 import { queueBest, serializableQueue, validPending } from "./ranking-sync.js";
 import { initLanguage, t, number } from "./ranking-i18n.js";
+import { initAdminUI } from "./ranking-admin.js";
 
 const QUEUE_KEY = "blockBlastPendingScoresV2";
 const LEGACY_KEY = "blockBlastPendingScoreV1";
@@ -207,13 +208,13 @@ function flushQueue() {
   }).finally(() => { flushPromise = null; });
   return flushPromise;
 }
-function openDialog(dialog) {
+function openDialog(dialog, { stack = false } = {}) {
   if (dialog.open) return;
-  document.querySelectorAll(".community-dialog[open]").forEach(other => other.close());
+  if (!stack) document.querySelectorAll(".community-dialog[open]").forEach(other => other.close());
   focusOrigins.set(dialog, keyboardNavigation ? document.activeElement : null);
   document.getElementById("gameCanvas").inert = true;
   dialog.showModal();
-  requestAnimationFrame(() => dialog.querySelector("h1").focus({ preventScroll: true }));
+  requestAnimationFrame(() => { if (dialog.open) dialog.querySelector("h1").focus({ preventScroll: true }); });
 }
 function openProfile() {
   const dialog = document.getElementById("profile-dialog");
@@ -332,7 +333,8 @@ async function bootstrapProfile() {
   else { setSync("syncNeedName"); openProfile(); }
 }
 export function initRankingUI() {
-  initLanguage(() => { renderStatus(); renderRankings(); });
+  const admin = initAdminUI({ openDialog, onScoresChanged: loadRankings });
+  initLanguage(() => { renderStatus(); renderRankings(); admin.render(); });
   persistQueue();
   renderStatus();
   document.addEventListener("keydown", event => {
@@ -350,8 +352,9 @@ export function initRankingUI() {
     const button = event.target.closest("button");
     if (button && !keyboardNavigation) button.blur();
   });
-  document.getElementById("ranking-language").addEventListener("change", event => {
-    const select = event.currentTarget;
+  document.addEventListener("change", event => {
+    const select = event.target;
+    if (!(select instanceof HTMLSelectElement)) return;
     if (!keyboardNavigation) {
       select.blur();
       // Native pickers can restore focus as they finish closing.
@@ -371,12 +374,15 @@ export function initRankingUI() {
         clearInterval(rankingRefreshTimer);
         rankingRefreshTimer = null;
       }
-      const activeDialog = document.querySelector(".community-dialog[open]");
+      const activeDialogs = document.querySelectorAll(".community-dialog[open]");
+      const activeDialog = activeDialogs[activeDialogs.length - 1];
       document.getElementById("gameCanvas").inert = Boolean(activeDialog);
       if (!activeDialog) {
         const origin = focusOrigins.get(dialog);
         if (keyboardNavigation && origin?.isConnected) origin.focus({ preventScroll: true });
         else if (document.activeElement instanceof HTMLElement) document.activeElement.blur();
+      } else if (!keyboardNavigation) {
+        requestAnimationFrame(() => activeDialog.querySelector("h1")?.focus({ preventScroll: true }));
       }
     });
     dialog.addEventListener("click", event => { if (event.target === dialog) dialog.close(); });

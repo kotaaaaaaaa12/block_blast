@@ -1,5 +1,6 @@
 import { SCHEMA_STATEMENTS } from "./schema.js";
 import { validateReplay, RULESET } from "../src/ranking-rules.js";
+import { adminApi } from "./admin.js";
 
 const MAX_BODY = 512 * 1024;
 const SESSION_LIFETIME = 7 * 24 * 60 * 60 * 1000;
@@ -243,6 +244,9 @@ export default {
     try {
       if (!env.DB) throw new ApiError(503, "Rankings are not configured yet.");
       await ensureSchema(env.DB);
+      if (path.startsWith("/api/admin/")) {
+        return await adminApi(request, env, { json, readJson, digest, randomToken, periodStart });
+      }
       if (path === "/api/health" && request.method === "GET") {
         await env.DB.prepare("SELECT id FROM ranking_runs LIMIT 1").first();
         return json({ ready: true, ruleset: RULESET });
@@ -268,6 +272,7 @@ export default {
     await env.DB.batch([
       env.DB.prepare("DELETE FROM ranking_runs WHERE expires_at < ?").bind(now),
       env.DB.prepare("DELETE FROM ranking_limits WHERE expires_at < ?").bind(now),
+      env.DB.prepare("DELETE FROM ranking_admin_sessions WHERE expires_at < ?").bind(now),
     ]);
   },
 };

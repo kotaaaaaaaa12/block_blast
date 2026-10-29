@@ -32,3 +32,17 @@ CREATE TABLE IF NOT EXISTS ranking_players (
   display_name TEXT NOT NULL,
   updated_at INTEGER NOT NULL
 );
+CREATE TABLE IF NOT EXISTS ranking_admin_sessions (
+  token_hash TEXT PRIMARY KEY,
+  secret_hash TEXT NOT NULL,
+  expires_at INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS ranking_admin_sessions_expiry ON ranking_admin_sessions(expires_at);
+CREATE TABLE IF NOT EXISTS ranking_admin_edits (
+  id TEXT PRIMARY KEY,
+  player_id TEXT NOT NULL,
+  day TEXT NOT NULL,
+  previous_score INTEGER NOT NULL,
+  score INTEGER NOT NULL,
+  created_at INTEGER NOT NULL
+);
