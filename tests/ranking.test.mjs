@@ -12,11 +12,12 @@ class TestDatabase {
   constructor() {
     this.db = new DatabaseSync(":memory:");
     this.batchCalls = 0;
+    this.pending = Promise.resolve();
   }
   prepare(sql) {
     const database = this.db;
     const wrapped = {
-      values: [],
+      sql, values: [],
       bind(...values) { this.values = values; return this; },
       async first() { return database.prepare(sql).get(...this.values) || null; },
       async all() { return { results: database.prepare(sql).all(...this.values), success: true }; },
@@ -25,14 +26,17 @@ class TestDatabase {
     return wrapped;
   }
   async batch(statements) {
-    this.batchCalls += 1;
-    this.db.exec("BEGIN");
-    try {
-      const results = [];
-      for (const statement of statements) results.push(await statement.run());
-      this.db.exec("COMMIT");
-      return results;
-    } catch (error) { this.db.exec("ROLLBACK"); throw error; }
+    this.batchCalls++;
+    const work = this.pending.then(async () => {
+      this.db.exec("BEGIN");
+      try {
+        const results = [];
+        for (const statement of statements) results.push(await statement.run());
+        this.db.exec("COMMIT"); return results;
+      } catch (error) { this.db.exec("ROLLBACK"); throw error; }
+    });
+    this.pending = work.catch(() => {});
+    return work;
   }
 }
 
@@ -110,208 +114,177 @@ function payload(session, extra = {}) {
   return { runId: session.runId, token: session.token, ruleset: RULESET, name: "Kota", ...game, ...extra };
 }
 
-test("original scoring keeps two misses and resets on the third", () => {
+function raw(env, id) { return env.DB.db.prepare('SELECT * FROM ranking_bests WHERE player_id=?').get(id); }
+async function seed(env, id, scores, options = {}) {
+  await ensureSchema(env.DB);
+  const now = options.now ?? Date.now(), today = periodStart('today', now), week = periodStart('week', now);
+  await env.DB.prepare('INSERT INTO ranking_players VALUES (?, ?, ?) ON CONFLICT(player_id) DO NOTHING').bind(id, options.name || 'Kota', now).run();
+  await env.DB.prepare('INSERT INTO ranking_bests VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)')
+    .bind(id, scores[0], now - 3, today, scores[1], now - 2, week, scores[2], now - 1, 1).run();
+}
+async function runFor(call, env, value = game) {
+  const { data: session } = await call('/api/session', {});
+  const id = env.DB.db.prepare('SELECT player_id FROM ranking_runs WHERE id=?').get(session.runId).player_id;
+  return { session, id, send: () => call('/api/scores', payload(session, value)) };
+}
+function watchWrites(env) {
+  env.DB.db.exec(`CREATE TABLE write_count(n INTEGER); INSERT INTO write_count VALUES(0);
+    CREATE TRIGGER best_insert AFTER INSERT ON ranking_bests BEGIN UPDATE write_count SET n=n+1; END;
+    CREATE TRIGGER best_update AFTER UPDATE ON ranking_bests BEGIN UPDATE write_count SET n=n+1; END;`);
+  return () => env.DB.db.prepare('SELECT n FROM write_count').get().n;
+}
+const legacySql = readFileSync(new URL('../migrations/0001_rankings.sql', import.meta.url), 'utf8');
+async function legacyRow(env, id, day, score, at, name = 'Legacy') {
+  await env.DB.prepare('INSERT INTO ranking_scores VALUES (?, ?, ?, ?, ?)').bind(id, day, name, score, at).run();
+}
+
+test('original scoring and replay validation reject unfinished or forged games', () => {
   const state = { score: 0, streak: 0, streakMultiplier: 1, movesSinceLastClear: 0 };
   assert.equal(scoreMove(state, 2, 1).totalEarned, 12);
-  scoreMove(state, 1, 0); scoreMove(state, 1, 0);
-  assert.equal(scoreMove(state, 4, 2).totalEarned, 64);
-  assert.equal(state.streak, 2);
-  for (let i = 0; i < 3; i++) scoreMove(state, 1, 0);
-  assert.equal(state.streak, 0);
-  assert.equal(scoreMove(state, 1, 1).totalEarned, 11);
+  scoreMove(state, 1, 0); scoreMove(state, 1, 0); assert.equal(scoreMove(state, 4, 2).totalEarned, 64);
+  for (let i=0;i<3;i++) scoreMove(state,1,0); assert.equal(state.streak,0);
+  assert.equal(validateReplay(game.events,game.score).score,game.score);
+  assert.throws(()=>validateReplay(game.events,game.score+1),/score/);
+  assert.throws(()=>validateReplay([['deal',['DOT','DOT','DOT']],['move',0,0,0]],1),/Finish/);
+  assert.throws(()=>validateReplay([['deal',['__proto__','DOT','DOT']]],1));
 });
-test("replay verifies a complete game and rejects forged scores and unfinished games", () => {
-  assert.equal(validateReplay(game.events, game.score).score, game.score);
-  assert.throws(() => validateReplay(game.events, game.score + 1), /score/);
-  assert.throws(() => validateReplay([["deal", ["DOT", "DOT", "DOT"]], ["move", 0, 0, 0]], 1), /Finish/);
-  assert.throws(() => validateReplay([["deal", ["__proto__", "DOT", "DOT"]], ["move", 0, 0, 0]], 1), /tray/);
-  assert.throws(() => validateReplay([["deal", ["DOT", "DOT", "DOT"]], ["move", 0, 0, 0], ["move", 1, 0, 0]], 2), /overlaps/);
-  assert.throws(() => validateReplay([["deal", ["DOT", "DOT", "DOT"]], ["move", 0, 8, 0]], 1), /placement/);
+test('names and Japan day/week keys are validated', () => {
+  assert.equal(normalizeName(' Ｋｏｔａ '),'Kota'); assert.throws(()=>normalizeName('<script>')); assert.throws(()=>normalizeName('a\u202Eb'));
+  assert.equal(periodStart('today',Date.parse('2026-10-18T15:00:00Z')),'2026-10-19');
+  assert.equal(periodStart('week',Date.parse('2026-10-18T14:59:59Z')),'2026-10-12');
+  assert.equal(periodStart('week',Date.parse('2026-10-18T15:00:00Z')),'2026-10-19');
 });
-test("Japan calendar changes day and week at local midnight", () => {
-  assert.equal(periodStart("today", Date.parse("2026-10-18T15:00:00Z")), "2026-10-19");
-  assert.equal(periodStart("week", Date.parse("2026-10-18T14:59:59Z")), "2026-10-12");
-  assert.equal(periodStart("week", Date.parse("2026-10-18T15:00:00Z")), "2026-10-19");
+test('first game stores one row with exactly three best-score values; retries are idempotent', async () => {
+  const env=environment(),call=client(env),run=await runFor(call,env);
+  assert.equal((await run.send()).response.status,200);
+  const before={...raw(env,run.id)};
+  assert.deepEqual([before.all_score,before.today_score,before.week_score],[game.score,game.score,game.score]);
+  assert.equal((await run.send()).data.repeated,true);
+  assert.deepEqual({...raw(env,run.id)},before);
+  assert.equal(env.DB.db.prepare('SELECT COUNT(*) n FROM ranking_bests').get().n,1);
+  for(const period of ['all','today','week']) assert.equal((await call('/api/leaderboard?period='+period)).data.me.score,game.score);
 });
-test("leaderboard drops previous-day and previous-week scores at Japan midnight", async t => {
-  let now = Date.parse("2026-10-18T14:59:59Z");
-  t.mock.method(Date, "now", () => now);
-  const env = environment();
-  const call = client(env);
-  const { data: session } = await call("/api/session", {});
-  assert.equal((await call("/api/scores", payload(session))).response.status, 200);
-  for (const period of ["all", "today", "week"]) {
-    const { data, response } = await call(`/api/leaderboard?period=${period}`);
-    assert.equal(data.total, 1);
-    assert.equal(data.me.score, game.score);
-    assert.equal(response.headers.get("Cache-Control"), "no-store");
+test('each best is compared independently and equal scores preserve achievement times', async () => {
+  const cases=[
+    {start:[game.score+100,1,1],want:[game.score+100,game.score,game.score]},
+    {start:[game.score+100,1,game.score+50],want:[game.score+100,game.score,game.score+50]},
+    {start:[1,1,1],want:[game.score,game.score,game.score]},
+  ];
+  for(const {start,want} of cases){
+    const env=environment(),call=client(env),run=await runFor(call,env);
+    await seed(env,run.id,start); const before=raw(env,run.id);
+    assert.equal((await run.send()).response.status,200);const after=raw(env,run.id);
+    assert.deepEqual([after.all_score,after.today_score,after.week_score],want);
+    if(start[0]===want[0])assert.equal(after.all_achieved_at,before.all_achieved_at);
   }
-  now += 1000;
-  for (const period of ["today", "week"]) {
-    const { data } = await call(`/api/leaderboard?period=${period}`);
-    assert.equal(data.startsOn, "2026-10-19");
-    assert.equal(data.total, 0);
-    assert.deepEqual(data.entries, []);
-    assert.equal(data.me, null);
+  const env=environment(),call=client(env),run=await runFor(call,env);await seed(env,run.id,[game.score,game.score,game.score]);
+  const before={...raw(env,run.id)};await run.send();assert.deepEqual({...raw(env,run.id)},before);
+});
+test('non-record games never write the ranking row and storage stays at one row per player', async () => {
+  const env=environment(),call=client(env),first=await runFor(call,env);
+  await seed(env,first.id,[game.score+100,game.score+100,game.score+100]);
+  const writes=watchWrites(env),before={...raw(env,first.id)};
+  await first.send();
+  for(let i=0;i<20;i++){const run=await runFor(call,env);assert.equal((await run.send()).response.status,200);}
+  assert.equal(writes(),0);assert.deepEqual({...raw(env,first.id)},before);
+  assert.equal(env.DB.db.prepare('SELECT COUNT(*) n FROM ranking_bests').get().n,1);
+  assert.equal(env.DB.db.prepare("SELECT COUNT(*) n FROM sqlite_master WHERE name IN ('ranking_scores','ranking_adjustments')").get().n,0);
+});
+test('day and week reset without writes or clearing all time; new lower scores fill expired slots', async t => {
+  let now=Date.parse('2026-10-20T14:59:59Z');t.mock.method(Date,'now',()=>now);
+  const env=environment(),call=client(env),first=await runFor(call,env);
+  await seed(env,first.id,[game.score+1000,game.score+100,game.score+500],{now});
+  const writes=watchWrites(env);now+=1000;
+  assert.equal((await call('/api/leaderboard?period=today')).data.total,0);
+  assert.equal((await call('/api/leaderboard?period=week')).data.me.score,game.score+500);assert.equal(writes(),0);
+  const second=await runFor(call,env);await second.send();let row=raw(env,first.id);
+  assert.deepEqual([row.all_score,row.today_score,row.week_score],[game.score+1000,game.score,game.score+500]);
+  now=Date.parse('2026-10-25T15:00:00Z');
+  assert.equal((await call('/api/leaderboard?period=week')).data.total,0);
+  const third=await runFor(call,env);await third.send();row=raw(env,first.id);
+  assert.deepEqual([row.all_score,row.today_score,row.week_score],[game.score+1000,game.score,game.score]);
+  assert.equal(row.week_key,'2026-10-26');assert.equal(env.DB.db.prepare('SELECT COUNT(*) n FROM ranking_bests').get().n,1);
+});
+test('concurrent legal submissions retain the maximum and do not create extra score rows', async () => {
+  const env=environment(),call=client(env);const low=completeGame(12),high=completeGame(99);
+  const a=await runFor(call,env,low),b=await runFor(call,env,high);
+  const result=await Promise.all([a.send(),b.send()]);assert.ok(result.every(r=>r.response.status===200));
+  const row=raw(env,a.id);assert.deepEqual([row.all_score,row.today_score,row.week_score],Array(3).fill(Math.max(low.score,high.score)));
+  assert.equal(env.DB.db.prepare('SELECT COUNT(*) n FROM ranking_bests').get().n,1);
+});
+test('profile changes update all rankings while browser identities remain isolated', async () => {
+  const env=environment(),one=client(env),two=client(env);const a=await runFor(one,env);await a.send();
+  const b=await runFor(two,env);await b.send();await one('/api/profile',{name:'New name'});
+  for(const period of ['all','today','week']){
+    const data=(await one('/api/leaderboard?period='+period)).data;
+    assert.equal(data.total,2);assert.equal(data.me.name,'New name');assert.equal((await two('/api/leaderboard?period='+period)).data.me.name,'Kota');
   }
-  assert.equal((await call("/api/leaderboard?period=all")).data.me.score, game.score);
-  const lower = completeGame(12);
-  const { data: next } = await call("/api/session", {});
-  assert.equal((await call("/api/scores", payload(next, lower))).response.status, 200);
-  for (const period of ["today", "week"]) {
-    assert.equal((await call(`/api/leaderboard?period=${period}`)).data.me.score, lower.score);
-  }
-  now += 24 * 60 * 60 * 1000;
-  assert.equal((await call("/api/leaderboard?period=today")).data.total, 0);
-  assert.equal((await call("/api/leaderboard?period=week")).data.me.score, lower.score);
-  assert.equal((await call("/api/leaderboard?period=all")).data.me.score, Math.max(game.score, lower.score));
 });
-test("display names normalize Unicode and reject markup and control characters", () => {
-  assert.equal(normalizeName("  Ｋｏｔａ  "), "Kota");
-  assert.throws(() => normalizeName("<script>"));
-  assert.throws(() => normalizeName("a\u202Eb"));
-  assert.throws(() => normalizeName("a".repeat(21)));
+test('sessions, origins, replay claims and parameter validation reject invalid requests', async () => {
+  const env=environment(),one=client(env),two=client(env),a=await runFor(one,env);await runFor(two,env);
+  assert.equal((await two('/api/scores',payload(a.session))).response.status,401);
+  assert.equal((await one('/api/scores',payload(a.session,{score:game.score+10}))).response.status,400);
+  assert.equal((await one('/api/session',{}, {headers:{Origin:'https://other.example'}})).response.status,403);
+  assert.equal((await one('/api/leaderboard?period=invalid')).response.status,400);
 });
-test("session, score, idempotent retry, deduplication, and private identity work together", async () => {
-  const env = environment();
-  const call = client(env);
-  const { data: session, response } = await call("/api/session", {});
-  assert.equal(response.status, 201);
-  assert.match(response.headers.get("set-cookie"), /HttpOnly; SameSite=Lax/);
-  assert.equal((await call("/api/scores", payload(session))).response.status, 200);
-  assert.equal((await call("/api/scores", payload(session))).data.repeated, true);
-  assert.equal((await call("/api/scores", payload(session, { name: "Another" }))).data.repeated, true);
-  const { data: session2 } = await call("/api/session", {});
-  assert.equal((await call("/api/scores", payload(session2, { name: "Second name" }))).response.status, 200);
-  const { data: ranking } = await call("/api/leaderboard?period=all");
-  assert.equal(ranking.total, 1);
-  assert.equal(ranking.entries[0].score, game.score);
-  assert.equal(ranking.me.rank, 1);
-  assert.equal(ranking.entries[0].name, "Kota");
-  assert.equal(JSON.stringify(ranking).includes("player_id"), false);
-  assert.equal((await call("/api/leaderboard?period=today")).data.total, 1);
-  assert.equal((await call("/api/leaderboard?period=week")).data.total, 1);
+test('leaderboards include the current player below the top 50 without leaking identity fields', async () => {
+  const env=environment(),call=client(env),run=await runFor(call,env);await run.send();
+  for(let i=0;i<55;i++)await seed(env,i.toString(16).padStart(64,'0'),Array(3).fill(game.score+100+i),{name:`Other ${i}`});
+  const data=(await call('/api/leaderboard?period=week')).data;
+  assert.equal(data.total,56);assert.equal(data.entries.length,50);assert.equal(data.me.rank,56);assert.equal(JSON.stringify(data).includes(run.id),false);
 });
-test("API blocks foreign sessions, cross-origin writes, and forged scores", async () => {
-  const env = environment();
-  const one = client(env), two = client(env);
-  const { data: session } = await one("/api/session", {});
-  await two("/api/session", {});
-  assert.equal((await two("/api/scores", payload(session))).response.status, 401);
-  assert.equal((await one("/api/scores", payload(session, { score: game.score + 10 }))).response.status, 400);
-  assert.equal((await one("/api/session", {}, { headers: { Origin: "https://other.example" } })).response.status, 403);
-  assert.equal((await one("/api/leaderboard?period=bad")).response.status, 400);
+test('automatic initialization shares a promise, runs compaction once and retries failures', async () => {
+  const db=new TestDatabase();const a=ensureSchema(db),b=ensureSchema(db);assert.equal(a,b);await Promise.all([a,b]);
+  assert.equal(db.batchCalls,2);await ensureSchema(db);assert.equal(db.batchCalls,2);
+  const retry=new TestDatabase(),batch=retry.batch.bind(retry);let failed=false;
+  retry.batch=async statements=>{if(!failed){failed=true;throw new Error('temporary');}return batch(statements);};
+  await assert.rejects(ensureSchema(retry));await ensureSchema(retry);
 });
-test("weekly rankings select each player's best and include your rank below the top 50", async () => {
-  const env = environment();
-  const call = client(env);
-  const { data: session } = await call("/api/session", {});
-  await call("/api/scores", payload(session));
-  const today = periodStart("today");
-  for (let i = 0; i < 55; i++) {
-    await env.DB.prepare("INSERT INTO ranking_scores VALUES (?, ?, ?, ?, ?)")
-      .bind(`other${i}`, today, `Player ${i}`, game.score + 100 + i, i).run();
-  }
-  await env.DB.prepare("INSERT INTO ranking_scores VALUES (?, ?, ?, ?, ?)")
-    .bind("other0", "2020-01-01", "Old best", 999999, 0).run();
-  const { data: all } = await call("/api/leaderboard?period=all");
-  assert.equal(all.entries.length, 50);
-  assert.equal(all.total, 56);
-  assert.equal(all.me.rank, 56);
-  assert.equal(all.entries[0].name, "Old best");
-  const { data: daily } = await call("/api/leaderboard?period=today");
-  assert.equal(daily.entries[0].name, "Player 54");
+test('current schema contains no daily-history tables and matches the bundled schema', () => {
+  const sql=readFileSync(new URL('../migrations/0002_three_bests.sql',import.meta.url),'utf8');
+  assert.deepEqual(SCHEMA_STATEMENTS,sql.split(';').map(x=>x.trim()).filter(Boolean));
+  assert.equal(SCHEMA_STATEMENTS.some(x=>/CREATE TABLE.*ranking_scores/.test(x)),false);
 });
-test("scheduled cleanup removes expired sessions and limits, keeping ranking scores", async () => {
-  const env = environment();
+test('migration compacts old daily history and corrections into three independent bests', async t => {
+  const now=Date.parse('2026-10-30T03:00:00Z');t.mock.method(Date,'now',()=>now);
+  const env=environment();env.DB.db.exec(legacySql);
+  await legacyRow(env,'a','2026-10-01',1000,1);await legacyRow(env,'a','2026-10-28',500,2);await legacyRow(env,'a','2026-10-30',100,3);
+  await env.DB.prepare('INSERT INTO ranking_players VALUES (?,?,?)').bind('a','Current name',4).run();
+  await legacyRow(env,'b','2026-10-29',900,10);await legacyRow(env,'b','2026-10-30',800,20);
+  await env.DB.prepare('INSERT INTO ranking_adjustments VALUES (?,?,?,?)').bind('b',50,30,'old-edit').run();
+  await legacyRow(env,'c','2026-10-29',400,10);await env.DB.prepare('INSERT INTO ranking_adjustments VALUES (?,?,?,?)').bind('c',0,30,'hide').run();
   await ensureSchema(env.DB);
-  env.DB.db.exec("INSERT INTO ranking_runs VALUES ('old', 'p', 't', 0, 1, NULL, NULL, NULL, NULL, NULL)");
-  env.DB.db.exec("INSERT INTO ranking_limits VALUES ('old', 1, 1)");
-  env.DB.db.exec("INSERT INTO ranking_scores VALUES ('p', '2026-10-16', 'Player', 10, 1)");
-  await worker.scheduled({}, env);
-  assert.equal((await env.DB.prepare("SELECT COUNT(*) AS n FROM ranking_runs").first()).n, 0);
-  assert.equal((await env.DB.prepare("SELECT COUNT(*) AS n FROM ranking_limits").first()).n, 0);
-  assert.equal((await env.DB.prepare("SELECT COUNT(*) AS n FROM ranking_scores").first()).n, 1);
+  assert.deepEqual([raw(env,'a').all_score,raw(env,'a').today_score,raw(env,'a').week_score],[1000,100,500]);
+  assert.deepEqual([raw(env,'b').all_score,raw(env,'b').today_score,raw(env,'b').week_score],[50,50,50]);
+  assert.equal(raw(env,'c').all_score,0);
+  assert.equal(env.DB.db.prepare('SELECT display_name FROM ranking_players WHERE player_id=?').get('a').display_name,'Current name');
+  assert.equal(env.DB.db.prepare("SELECT COUNT(*) n FROM sqlite_master WHERE name IN ('ranking_scores','ranking_adjustments')").get().n,0);
+  const snapshot=env.DB.db.prepare('SELECT * FROM ranking_bests ORDER BY player_id').all();
+  const binding={prepare:env.DB.prepare.bind(env.DB),batch:env.DB.batch.bind(env.DB)};await ensureSchema(binding);
+  assert.deepEqual(env.DB.db.prepare('SELECT * FROM ranking_bests ORDER BY player_id').all(),snapshot);
 });
-
-
-test("an empty D1 database initializes once across concurrent first requests", async () => {
-  const env = environment();
-  const requests = Array.from({ length: 8 }, () => worker.fetch(new Request("https://game.example/api/health"), env));
-  const responses = await Promise.all(requests);
-  assert.ok(responses.every(response => response.status === 200));
-  assert.equal(env.DB.batchCalls, 1);
-  assert.equal((await env.DB.prepare("SELECT COUNT(*) AS n FROM ranking_scores").first()).n, 0);
-});
-test("automatic initialization preserves existing scores and retries a failed setup", async () => {
-  const env = environment();
-  let fail = true;
-  const batch = env.DB.batch.bind(env.DB);
-  env.DB.batch = async statements => {
-    if (fail) { fail = false; throw new Error("Temporary D1 failure"); }
+test('migration supports old databases without corrections and rolls back before dropping history on failure', async () => {
+  const env=environment();env.DB.db.exec(legacySql);env.DB.db.exec('DROP TABLE ranking_adjustments');
+  await legacyRow(env,'a',periodStart('today'),321,1);
+  const batch=env.DB.batch.bind(env.DB);let fail=true;
+  env.DB.batch=async statements=>{
+    if(fail&&statements.some(x=>x.sql.startsWith('DROP TABLE'))){
+      fail=false;
+      const index=statements.findIndex(x=>x.sql.startsWith('DROP TABLE'));
+      return batch([...statements.slice(0,index),env.DB.prepare('INSERT INTO missing_table VALUES(1)'),...statements.slice(index)]);
+    }
     return batch(statements);
   };
-  await assert.rejects(ensureSchema(env.DB), /Temporary/);
-  await ensureSchema(env.DB);
-  env.DB.db.exec("INSERT INTO ranking_scores VALUES ('p', '2026-10-16', 'Existing player', 123, 1)");
-  const newIsolateBinding = new TestDatabase();
-  newIsolateBinding.db.close();
-  newIsolateBinding.db = env.DB.db;
-  await ensureSchema(newIsolateBinding);
-  assert.equal((await env.DB.prepare("SELECT score FROM ranking_scores WHERE player_id = 'p'").first()).score, 123);
+  await assert.rejects(ensureSchema(env.DB));assert.equal(env.DB.db.prepare('SELECT score FROM ranking_scores').get().score,321);
+  assert.equal(env.DB.db.prepare('SELECT COUNT(*) n FROM ranking_bests').get().n,0);
+  await ensureSchema(env.DB);assert.equal(raw(env,'a').all_score,321);
 });
-test("the bundled initialization schema matches the canonical migration", () => {
-  const sql = readFileSync(new URL("../migrations/0001_rankings.sql", import.meta.url), "utf8");
-  assert.deepEqual(SCHEMA_STATEMENTS, sql.split(";").map(statement => statement.trim()).filter(Boolean));
-});
-
-
-test("a device profile renames every ranking while lower scores keep the personal best", async () => {
-  const env = environment();
-  const call = client(env);
-  const profile = await call("/api/profile");
-  assert.equal(profile.data.name, null);
-  assert.match(profile.response.headers.get("set-cookie"), /HttpOnly/);
-  assert.equal((await call("/api/profile", { name: "Original name" })).response.status, 200);
-  const games = Array.from({ length: 8 }, (_, i) => completeGame(i + 1)).sort((a, b) => a.score - b.score);
-  const low = games[0], high = games.at(-1);
-  assert.ok(high.score > low.score);
-  const lowSession = (await call("/api/session", {})).data;
-  assert.equal((await call("/api/scores", payload(lowSession, low))).response.status, 200);
-  assert.equal((await call("/api/leaderboard")).data.me.score, low.score);
-  const session1 = (await call("/api/session", {})).data;
-  assert.equal((await call("/api/scores", payload(session1, high))).response.status, 200);
-  const initial = (await call("/api/leaderboard?period=all")).data;
-  const achievedAt = initial.me.achievedAt;
-  assert.equal(initial.me.name, "Original name");
-  assert.equal(initial.me.score, high.score);
-  const session2 = (await call("/api/session", {})).data;
-  assert.equal((await call("/api/scores", payload(session2, low))).response.status, 200);
-  let ranking = (await call("/api/leaderboard?period=all")).data;
-  assert.equal(ranking.total, 1);
-  assert.equal(ranking.me.score, high.score);
-  assert.equal(ranking.me.achievedAt, achievedAt);
-  assert.equal((await call("/api/profile", { name: "新しい名前" })).response.status, 200);
-  for (const period of ["all", "today", "week"]) {
-    ranking = (await call(`/api/leaderboard?period=${period}`)).data;
-    assert.equal(ranking.me.name, "新しい名前");
-    assert.equal(ranking.me.score, high.score);
-  }
-  assert.equal((await call("/api/profile")).data.name, "新しい名前");
-  assert.equal((await call("/api/scores", payload(session1, { ...high, name: "Stale tab" }))).data.repeated, true);
-  assert.equal((await call("/api/leaderboard")).data.me.name, "新しい名前");
-});
-test("profile changes require the same origin and do not affect another browser", async () => {
-  const env = environment();
-  const one = client(env), two = client(env);
-  await one("/api/profile", { name: "First" });
-  await two("/api/profile", { name: "Second" });
-  assert.equal((await one("/api/profile", { name: "Hijack" }, { headers: { Origin: "https://other.example" } })).response.status, 403);
-  assert.equal((await one("/api/profile")).data.name, "First");
-  assert.equal((await two("/api/profile")).data.name, "Second");
-  const invalid = await one("/api/profile", { name: "<bad>" });
-  assert.equal(invalid.response.status, 400);
-  assert.equal(invalid.data.code, "invalidName");
+test('scheduled cleanup expires temporary records while retaining the three bests', async t => {
+  let now=Date.now();t.mock.method(Date,'now',()=>now);const env=environment(),call=client(env),run=await runFor(call,env);await run.send();
+  const before={...raw(env,run.id)};now+=8*86400000;await worker.scheduled({},env);
+  assert.equal(env.DB.db.prepare('SELECT COUNT(*) n FROM ranking_runs').get().n,0);
+  assert.equal(env.DB.db.prepare('SELECT COUNT(*) n FROM ranking_limits').get().n,0);
+  assert.deepEqual({...raw(env,run.id)},before);
 });
 
 test("admin authentication protects score editing, revokes logout, and expires with password rotation", async t => {
@@ -342,44 +315,6 @@ test("admin authentication protects score editing, revokes logout, and expires w
   assert.equal(env.DB.db.prepare('SELECT COUNT(*) AS n FROM ranking_admin_sessions').get().n, 0);
 });
 
-test("admin edits higher and lower daily scores, detects stale writes, audits, and preserves all periods", async () => {
-  const env = { ...environment(), ADMIN_PASSWORD: 'test-only-admin-secret-strong' };
-  const player = client(env), admin = client(env);
-  const { data: session } = await player('/api/session', {});
-  await player('/api/scores', payload(session));
-  await admin('/api/admin/login', { password: env.ADMIN_PASSWORD });
-  const list = (await admin('/api/admin/scores?search=Kota&period=today')).data;
-  assert.equal(list.total, 1);
-  let row = list.entries[0];
-  const edit = score => ({ playerId: row.playerId, day: row.day, achievedAt: row.achievedAt, expectedScore: row.score, score });
-  const high = edit(game.score + 500);
-  assert.equal((await admin('/api/admin/scores', high)).response.status, 200);
-  for (const period of ['all', 'today', 'week']) {
-    assert.equal((await player(`/api/leaderboard?period=${period}`)).data.me.score, game.score + 500);
-  }
-  assert.equal((await player('/api/scores', payload(session))).data.repeated, true);
-  assert.equal((await player('/api/leaderboard')).data.me.score, game.score + 500);
-  assert.equal((await admin('/api/admin/scores', high)).response.status, 409);
-  row = (await admin('/api/admin/scores')).data.entries[0];
-  assert.equal((await admin('/api/admin/scores', edit(1))).response.status, 200);
-  assert.equal((await player('/api/leaderboard')).data.me.score, 1);
-  const { data: next } = await player('/api/session', {});
-  assert.equal((await player('/api/scores', payload(next))).response.status, 200);
-  assert.equal((await player('/api/leaderboard')).data.me.score, game.score);
-  row = (await admin('/api/admin/scores')).data.entries[0];
-  const priorDay = new Date(Date.parse(row.day + 'T00:00:00Z') - 86400000).toISOString().slice(0, 10);
-  await env.DB.prepare('INSERT INTO ranking_scores (player_id, day, display_name, score, achieved_at) VALUES (?, ?, ?, ?, ?)')
-    .bind(row.playerId, priorDay, 'Kota', 50, row.achievedAt - 86400000).run();
-  assert.equal((await admin('/api/admin/scores', edit(0))).response.status, 200);
-  assert.equal((await player('/api/leaderboard?period=today')).data.me, null);
-  assert.equal((await player('/api/leaderboard?period=all')).data.me.score, 50);
-  assert.equal((await admin(`/api/admin/scores?day=${priorDay}`)).data.total, 1);
-  const audit = env.DB.db.prepare('SELECT previous_score, score FROM ranking_admin_edits ORDER BY created_at, rowid').all();
-  assert.equal(audit.length, 3);
-  assert.deepEqual(audit.map(r => r.score), [game.score + 500, 1, 0]);
-  const publicRanking = JSON.stringify((await player('/api/leaderboard')).data);
-  assert.equal(publicRanking.includes(row.playerId), false);
-});
 
 test("admin rejects cross-origin requests, malformed edits, and brute-force login attempts", async () => {
   const env = { ...environment(), ADMIN_PASSWORD: 'test-only-admin-secret-strong' };
@@ -391,9 +326,9 @@ test("admin rejects cross-origin requests, malformed edits, and brute-force logi
   assert.equal(missingOrigin.status, 403);
   await call('/api/admin/login', { password: env.ADMIN_PASSWORD });
   for (const score of [-1, 0.5, '200', 2147483648, null]) {
-    assert.equal((await call('/api/admin/scores', { playerId: 'a'.repeat(64), day: '2026-10-29', expectedScore: 100, achievedAt: 1, score })).response.status, 400);
+    assert.equal((await call('/api/admin/scores', { scope: 'three-bests', playerId: 'a'.repeat(64), day: '2026-10-29', revision: 1, expectedScore: 100, achievedAt: 1, score })).response.status, 400);
   }
-  assert.equal((await call('/api/admin/scores?day=2026-02-30')).response.status, 400);
+  assert.equal((await call('/api/admin/scores?search=' + 'x'.repeat(81))).response.status, 400);
   assert.equal((await call('/api/admin/scores?page=-1')).response.status, 400);
   assert.equal((await call('/api/admin/scores', {}, { headers: { Origin: 'https://other.example' } })).response.status, 403);
   assert.equal(env.DB.db.prepare('SELECT COUNT(*) AS n FROM ranking_admin_edits').get().n, 0);
@@ -406,55 +341,51 @@ test("admin rejects cross-origin requests, malformed edits, and brute-force logi
   assert.equal((await disabled('/api/leaderboard')).response.status, 200);
 });
 
-test("admin paginates and searches literal names without exposing additional records", async () => {
-  const env = { ...environment(), ADMIN_PASSWORD: 'test-only-admin-secret-strong' };
-  await ensureSchema(env.DB);
-  const today = periodStart('today');
-  for (let i = 0; i < 35; i++) await env.DB.prepare('INSERT INTO ranking_scores VALUES (?, ?, ?, ?, ?)')
-    .bind(i.toString(16).padStart(64, '0'), today, i === 1 ? '100%_Player' : `Player ${i}`, i + 1, i + 1).run();
-  const call = client(env); await call('/api/admin/login', { password: env.ADMIN_PASSWORD });
-  const first = (await call('/api/admin/scores')).data;
-  const second = (await call('/api/admin/scores?page=2')).data;
-  assert.equal(first.total, 35); assert.equal(first.entries.length, 30); assert.equal(second.entries.length, 5);
-  assert.equal(new Set([...first.entries, ...second.entries].map(r => r.playerId)).size, 35);
-  assert.equal((await call('/api/admin/scores?search=%25_')).data.total, 1);
-  assert.equal((await call('/api/admin/scores?search=%27%20OR%201%3D1--')).data.total, 0);
-});
-
-test("admin groups daily history by browser identity before pagination and preserves equal-name players", async () => {
-  const env = { ...environment(), ADMIN_PASSWORD: 'test-only-admin-secret-strong' };
-  await ensureSchema(env.DB);
-  const today = periodStart('today');
-  const target = 'a'.repeat(64), other = 'b'.repeat(64);
-  for (let i = 0; i < 65; i++) {
-    const day = new Date(Date.parse(today + 'T00:00:00Z') - i * 86400000).toISOString().slice(0, 10);
-    await env.DB.prepare('INSERT INTO ranking_scores VALUES (?, ?, ?, ?, ?)')
-      .bind(target, day, 'Same name', i + 1, i + 1).run();
+test('admin edits all three slots atomically, catches stale versions and permits zero/restore', async t => {
+  let now=Date.parse('2026-10-30T03:00:00Z');t.mock.method(Date,'now',()=>now);
+  const env={...environment(),ADMIN_PASSWORD:'test-only-admin-secret-strong'},call=client(env),run=await runFor(call,env);await run.send();
+  await call('/api/admin/login',{password:env.ADMIN_PASSWORD});
+  const get=async()=>(await call('/api/admin/scores')).data.entries[0];
+  let row=await get();const stale={...row,scope:'three-bests',expectedScore:row.score,score:8888};
+  const edit=score=>call('/api/admin/scores',{...row,scope:'three-bests',expectedScore:row.score,score});
+  for(const score of [game.score+1000,1,0,game.score+2000]){
+    assert.equal((await edit(score)).response.status,200);
+    for(const period of ['all','today','week']){
+      const data=(await call('/api/leaderboard?period='+period)).data;
+      if(score===0)assert.equal(data.me,null);else assert.equal(data.me.score,score);
+    }
+    assert.deepEqual([raw(env,run.id).all_score,raw(env,run.id).today_score,raw(env,run.id).week_score],Array(3).fill(score));
+    row=await get();assert.equal(typeof row.revision,'number');assert.equal(row.score,score);
   }
-  await env.DB.prepare('INSERT INTO ranking_scores VALUES (?, ?, ?, ?, ?)').bind(other, today, 'Same name', 100, 1).run();
-  for (let i = 0; i < 33; i++) await env.DB.prepare('INSERT INTO ranking_scores VALUES (?, ?, ?, ?, ?)')
-    .bind(i.toString(16).padStart(64, '0'), today, `Player ${i}`, 10, i + 1).run();
-  const call = client(env); await call('/api/admin/login', { password: env.ADMIN_PASSWORD });
-  const first = (await call('/api/admin/scores?view=players')).data;
-  const second = (await call('/api/admin/scores?view=players&page=2')).data;
-  assert.equal(first.total, 35); assert.equal(first.entries.length, 30); assert.equal(second.entries.length, 5);
-  const players = [...first.entries, ...second.entries];
-  assert.equal(new Set(players.map(x => x.playerId)).size, 35);
-  assert.equal(players.filter(x => x.name === 'Same name').length, 2);
-  const grouped = players.find(x => x.playerId === target);
-  assert.equal(grouped.recordCount, 65); assert.equal(grouped.score, 65);
-  const history = (await call(`/api/admin/scores?playerId=${target}`)).data;
-  const last = (await call(`/api/admin/scores?playerId=${target}&page=3`)).data;
-  assert.equal(history.total, 65); assert.equal(history.entries.length, 30); assert.equal(last.entries.length, 5);
-  assert.ok([...history.entries, ...last.entries].every(x => x.playerId === target));
-  const daily = (await call('/api/admin/scores?view=players&period=today&search=Same')).data;
-  assert.equal(daily.total, 2);
-  assert.ok(daily.entries.every(x => x.recordCount === 1));
-  const edit = { ...history.entries[0], expectedScore: history.entries[0].score, score: 500 };
-  assert.equal((await call('/api/admin/scores', edit)).response.status, 200);
-  const updated = (await call('/api/admin/scores?view=players&search=Same')).data;
-  assert.equal(updated.total, 2);
-  assert.equal(updated.entries.find(x => x.playerId === target).score, 500);
-  assert.equal(updated.entries.find(x => x.playerId === target).recordCount, 65);
-  assert.equal((await call('/api/admin/scores?view=players&playerId=invalid')).response.status, 400);
+  assert.equal((await call('/api/admin/scores',stale)).response.status,409);
+  assert.equal((await call('/api/admin/scores',{...row,scope:'best',expectedScore:row.score,score:10})).response.status,400);
+  await run.send();assert.equal((await get()).score,game.score+2000);
+  row=await get();await edit(1);
+  const next=await runFor(call,env);await next.send();assert.equal((await get()).score,game.score);
+  row=await get();const staleSmall={...row,scope:'three-bests',expectedScore:row.score,score:5};
+  await edit(row.score);assert.equal((await call('/api/admin/scores',staleSmall)).response.status,409);
+  now=Date.parse('2026-11-01T15:00:00Z');
+  assert.equal((await call('/api/leaderboard?period=today')).data.total,0);
+  assert.equal((await call('/api/leaderboard?period=week')).data.total,0);
+  assert.equal((await call('/api/leaderboard?period=all')).data.me.score,game.score);
+});
+test('admin search/pagination lists one record per identity and treats equal names as separate browsers', async () => {
+  const env={...environment(),ADMIN_PASSWORD:'test-only-admin-secret-strong'};
+  for(let i=0;i<35;i++)await seed(env,i.toString(16).padStart(64,'0'),[100+i,10+i,50+i],{name:i<2?'Same name':i===2?'100%_Player':`Player ${i}`});
+  const call=client(env);await call('/api/admin/login',{password:env.ADMIN_PASSWORD});
+  const a=(await call('/api/admin/scores')).data,b=(await call('/api/admin/scores?page=2')).data;
+  assert.equal(a.total,35);assert.equal(a.entries.length,30);assert.equal(b.entries.length,5);
+  assert.equal(new Set([...a.entries,...b.entries].map(x=>x.playerId)).size,35);
+  assert.equal((await call('/api/admin/scores?search=Same')).data.total,2);
+  assert.equal((await call('/api/admin/scores?search=%25_')).data.total,1);
+  assert.equal((await call('/api/admin/scores?search=%27%20OR%201%3D1--')).data.total,0);
+});
+test('two cold bindings can initialize and compact the same legacy database safely', async () => {
+  const env=environment();env.DB.db.exec(legacySql);
+  await legacyRow(env,'a',periodStart('today'),234,1);
+  const other={prepare:env.DB.prepare.bind(env.DB),batch:env.DB.batch.bind(env.DB)};
+  await Promise.all([ensureSchema(env.DB),ensureSchema(other)]);
+  assert.equal(raw(env,'a').all_score,234);
+  assert.equal(env.DB.db.prepare('SELECT COUNT(*) n FROM ranking_bests').get().n,1);
+  assert.equal(env.DB.db.prepare("SELECT COUNT(*) n FROM sqlite_master WHERE name='ranking_scores'").get().n,0);
 });

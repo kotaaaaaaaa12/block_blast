@@ -1,6 +1,7 @@
 const ENCODER = new TextEncoder();
 const LIFETIME = 2 * 60 * 60 * 1000;
 const PAGE_SIZE = 30;
+import { ADMIN_BEST } from "./ranking-sql.js";
 
 class AdminError extends Error {
   constructor(status, code) { super(code); this.status = status; this.code = code; }
@@ -26,11 +27,6 @@ async function matchesPassword(expected, supplied) {
   const signature = await crypto.subtle.sign("HMAC", await importKey(expected), challenge);
   return crypto.subtle.verify("HMAC", await importKey(supplied), signature, challenge);
 }
-function validDay(value) {
-  return typeof value === "string" && /^\d{4}-\d{2}-\d{2}$/.test(value) &&
-    Number.isFinite(Date.parse(`${value}T00:00:00Z`)) && new Date(`${value}T00:00:00Z`).toISOString().slice(0, 10) === value;
-}
-
 export async function adminApi(request, env, api) {
   const { json, readJson, digest, randomToken, periodStart } = api;
   try {
@@ -76,58 +72,41 @@ export async function adminApi(request, env, api) {
     }
     if (!session) throw new AdminError(401, "adminUnauthorized");
     if (action === "scores" && request.method === "GET") {
-      const timezone = env.RANKING_TIMEZONE || "Asia/Tokyo";
-      const start = periodStart(url.searchParams.get("period") || "all", Date.now(), timezone);
       const search = (url.searchParams.get("search") || "").trim();
-      const day = url.searchParams.get("day") || "";
       const page = Number(url.searchParams.get("page") || 1);
-      const view = url.searchParams.get("view") || "records";
-      const playerId = url.searchParams.get("playerId") || "";
-      if (search.length > 80 || (day && !validDay(day)) || !Number.isInteger(page) || page < 1 || page > 100000 ||
-          !["players", "records"].includes(view) || (playerId && !/^[a-f0-9]{64}$/.test(playerId))) {
+      if (search.length > 80 || !Number.isInteger(page) || page < 1 || page > 100000) {
         throw new AdminError(400, "invalidRequest");
       }
-      const from = `FROM ranking_scores s LEFT JOIN ranking_players p ON p.player_id = s.player_id
-        WHERE s.day >= ? AND (? = '' OR s.day = ?)
-        AND (? = '' OR instr(lower(COALESCE(p.display_name, s.display_name)), lower(?)) > 0)
-        AND (? = '' OR s.player_id = ?)`;
-      const args = [start, day, day, search, search, playerId, playerId];
-      if (view === "players") {
-        const result = await env.DB.prepare(`WITH daily AS (
-          SELECT s.player_id AS playerId, COALESCE(p.display_name, s.display_name) AS name,
-            s.score, s.day, s.achieved_at AS achievedAt,
-            COUNT(*) OVER (PARTITION BY s.player_id) AS recordCount,
-            ROW_NUMBER() OVER (PARTITION BY s.player_id ORDER BY s.score DESC, s.achieved_at ASC, s.day DESC) AS choice
-          ${from}
-        ) SELECT playerId, name, score, day, achievedAt, recordCount FROM daily WHERE choice = 1
-          ORDER BY score DESC, achievedAt ASC, playerId ASC LIMIT ? OFFSET ?`)
-          .bind(...args, PAGE_SIZE, (page - 1) * PAGE_SIZE).all();
-        const count = await env.DB.prepare(`SELECT COUNT(DISTINCT s.player_id) AS total ${from}`).bind(...args).first();
-        return json({ entries: result.results || [], total: count.total, page, pageSize: PAGE_SIZE, timezone });
-      }
-      const result = await env.DB.prepare(`SELECT s.player_id AS playerId, s.day, s.score, s.achieved_at AS achievedAt,
-        COALESCE(p.display_name, s.display_name) AS name ${from}
-        ORDER BY s.day DESC, s.score DESC, s.player_id ASC LIMIT ? OFFSET ?`)
-        .bind(...args, PAGE_SIZE, (page - 1) * PAGE_SIZE).all();
-      const count = await env.DB.prepare(`SELECT COUNT(*) AS total ${from}`).bind(...args).first();
-      return json({ entries: result.results || [], total: count.total, page, pageSize: PAGE_SIZE, timezone });
+      const filter = "WHERE (? = '' OR instr(lower(name), lower(?)) > 0)";
+      const result = await env.DB.prepare(`${ADMIN_BEST}
+        SELECT player_id AS playerId, name, score, achieved_at AS achievedAt, revision FROM best ${filter}
+        ORDER BY score DESC, achieved_at ASC, player_id ASC LIMIT ? OFFSET ?`)
+        .bind(search, search, PAGE_SIZE, (page - 1) * PAGE_SIZE).all();
+      const count = await env.DB.prepare(`${ADMIN_BEST} SELECT COUNT(*) AS total FROM best ${filter}`).bind(search, search).first();
+      return json({ entries: result.results || [], total: count.total, page, pageSize: PAGE_SIZE });
     }
     if (action === "scores" && request.method === "POST") {
       const body = await readJson(request);
-      if (!/^[a-f0-9]{64}$/.test(body.playerId || "") || !validDay(body.day) ||
+      if (body.scope !== "three-bests" || !/^[a-f0-9]{64}$/.test(body.playerId || "") ||
           !Number.isSafeInteger(body.score) || body.score < 0 || body.score > 2147483647 ||
-          !Number.isSafeInteger(body.expectedScore) || body.expectedScore < 1 ||
-          !Number.isSafeInteger(body.achievedAt) || body.achievedAt < 0) throw new AdminError(400, "adminInvalidScore");
-      const match = "player_id = ? AND day = ? AND score = ? AND achieved_at = ?";
-      const values = [body.playerId, body.day, body.expectedScore, body.achievedAt];
+          !Number.isSafeInteger(body.expectedScore) || body.expectedScore < 0 ||
+          !Number.isSafeInteger(body.revision) || body.revision < 1) throw new AdminError(400, "adminInvalidScore");
+      const editId = crypto.randomUUID();
+      const now = Date.now();
+      const today = periodStart("today", now, env.RANKING_TIMEZONE || "Asia/Tokyo");
+      const week = periodStart("week", now, env.RANKING_TIMEZONE || "Asia/Tokyo");
       const result = await env.DB.batch([
-        env.DB.prepare(`INSERT INTO ranking_admin_edits (id, player_id, day, previous_score, score, created_at)
-          SELECT ?, player_id, day, score, ?, ? FROM ranking_scores WHERE ${match}`)
-          .bind(crypto.randomUUID(), body.score, Date.now(), ...values),
-        body.score === 0 ? env.DB.prepare(`DELETE FROM ranking_scores WHERE ${match}`).bind(...values) :
-          env.DB.prepare(`UPDATE ranking_scores SET score = ? WHERE ${match}`).bind(body.score, ...values),
+        env.DB.prepare(`${ADMIN_BEST}
+          INSERT INTO ranking_admin_edits (id, player_id, day, previous_score, score, created_at)
+          SELECT ?, player_id, ?, score, ?, ? FROM best
+          WHERE player_id = ? AND score = ? AND revision = ?`)
+          .bind(editId, today, body.score, now, body.playerId, body.expectedScore, body.revision),
+        env.DB.prepare(`UPDATE ranking_bests SET all_score = ?, all_achieved_at = ?,
+          today_key = ?, today_score = ?, today_achieved_at = ?, week_key = ?, week_score = ?, week_achieved_at = ?, revision = revision + 1
+          WHERE player_id = ? AND EXISTS (SELECT 1 FROM ranking_admin_edits WHERE id = ?)`)
+          .bind(body.score, now, today, body.score, now, week, body.score, now, body.playerId, editId),
       ]);
-      if (!result[1].meta?.changes) throw new AdminError(409, "adminConflict");
+      if (!result[0].meta?.changes) throw new AdminError(409, "adminConflict");
       return json({ saved: true, removed: body.score === 0, score: body.score });
     }
     return json({ code: "notFound", error: "API route not found." }, 404);

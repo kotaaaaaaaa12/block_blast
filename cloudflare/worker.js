@@ -1,17 +1,22 @@
 import { SCHEMA_STATEMENTS } from "./schema.js";
 import { validateReplay, RULESET } from "../src/ranking-rules.js";
 import { adminApi } from "./admin.js";
+import { PERIOD_COLUMNS, UPSERT_BESTS } from "./ranking-sql.js";
+import { migrateBests } from "./ranking-migrate.js";
 
 const MAX_BODY = 512 * 1024;
 const SESSION_LIFETIME = 7 * 24 * 60 * 60 * 1000;
 const ENCODER = new TextEncoder();
 const schemaReady = new WeakMap();
 
-export function ensureSchema(db) {
+export function ensureSchema(db, timezone = "Asia/Tokyo") {
   let ready = schemaReady.get(db);
   if (!ready) {
     ready = db.batch(SCHEMA_STATEMENTS.map(statement => db.prepare(statement)))
-      .then(() => undefined)
+      .then(() => {
+        const now = Date.now();
+        return migrateBests(db, periodStart("today", now, timezone), periodStart("week", now, timezone), now);
+      })
       .catch(error => { schemaReady.delete(db); throw error; });
     schemaReady.set(db, ready);
   }
@@ -158,31 +163,29 @@ async function profile(request, env) {
   }
   const current = await env.DB.prepare("SELECT display_name FROM ranking_players WHERE player_id = ?")
     .bind(identity.id).first();
-  const legacy = current ? null : await env.DB.prepare(`SELECT display_name FROM ranking_scores
-    WHERE player_id = ? ORDER BY achieved_at DESC LIMIT 1`).bind(identity.id).first();
-  return json({ name: current?.display_name || legacy?.display_name || null, profileExists: Boolean(current) }, 200,
+  return json({ name: current?.display_name || null, profileExists: Boolean(current) }, 200,
     { "Set-Cookie": identity.cookie });
 }
-const BEST_CTE = `WITH candidates AS (
-  SELECT s.player_id, COALESCE(p.display_name, s.display_name) AS display_name, s.score, s.achieved_at,
-    ROW_NUMBER() OVER (PARTITION BY s.player_id ORDER BY s.score DESC, s.achieved_at ASC) AS choice
-  FROM ranking_scores s LEFT JOIN ranking_players p ON p.player_id = s.player_id WHERE s.day >= ?
-), best AS (
-  SELECT player_id, display_name, score, achieved_at FROM candidates WHERE choice = 1
-), ranked AS (
-  SELECT *, ROW_NUMBER() OVER (ORDER BY score DESC, achieved_at ASC, player_id ASC) AS rank
-  FROM best
-)`;
 async function leaderboard(request, env) {
   const period = new URL(request.url).searchParams.get("period") || "all";
   const timezone = env.RANKING_TIMEZONE || "Asia/Tokyo";
   const start = periodStart(period, Date.now(), timezone);
+  const column = PERIOD_COLUMNS[period];
+  const values = column.key ? [start] : [];
+  const best = `WITH best AS (
+    SELECT b.player_id, COALESCE(p.display_name, 'Player') AS display_name,
+      b.${column.score} AS score, b.${column.time} AS achieved_at
+    FROM ranking_bests b LEFT JOIN ranking_players p ON p.player_id = b.player_id
+    WHERE b.${column.score} > 0 ${column.key ? `AND b.${column.key} = ?` : ''}
+  ), ranked AS (
+    SELECT *, ROW_NUMBER() OVER (ORDER BY score DESC, achieved_at ASC, player_id ASC) AS rank FROM best
+  )`;
   const identity = await playerIdentity(request);
-  const result = await env.DB.prepare(`${BEST_CTE}
+  const result = await env.DB.prepare(`${best}
     SELECT display_name AS name, score, achieved_at AS achievedAt, rank,
       (player_id = ?) AS mine, (SELECT COUNT(*) FROM best) AS total
     FROM ranked WHERE rank <= 50 OR player_id = ? ORDER BY rank`)
-    .bind(start, identity.id, identity.id).all();
+    .bind(...values, identity.id, identity.id).all();
   const rows = result.results || [];
   const entries = rows.filter(row => row.rank <= 50).map(publicEntry);
   const mine = rows.find(row => row.mine);
@@ -224,13 +227,7 @@ async function submit(request, env) {
     env.DB.prepare(`UPDATE ranking_runs SET submitted_at = ?, score = ?, display_name = ?, day = ?, replay_hash = ?
       WHERE id = ? AND player_id = ? AND token_hash = ? AND submitted_at IS NULL`)
       .bind(now, verified.score, name, day, replayHash, body.runId, identity.id, tokenHash),
-    env.DB.prepare(`INSERT INTO ranking_scores (player_id, day, display_name, score, achieved_at)
-      SELECT player_id, day, display_name, score, submitted_at FROM ranking_runs
-      WHERE id = ? AND player_id = ? AND token_hash = ? AND submitted_at IS NOT NULL
-      ON CONFLICT(player_id, day) DO UPDATE SET
-        display_name = excluded.display_name, score = excluded.score, achieved_at = excluded.achieved_at
-      WHERE excluded.score > ranking_scores.score`)
-      .bind(body.runId, identity.id, tokenHash),
+    env.DB.prepare(UPSERT_BESTS).bind(body.runId, identity.id, tokenHash, replayHash),
   ]);
   const saved = await env.DB.prepare("SELECT replay_hash, score, display_name FROM ranking_runs WHERE id = ?")
     .bind(body.runId).first();
@@ -243,7 +240,7 @@ export default {
     if (!path.startsWith("/api/")) return env.ASSETS.fetch(request);
     try {
       if (!env.DB) throw new ApiError(503, "Rankings are not configured yet.");
-      await ensureSchema(env.DB);
+      await ensureSchema(env.DB, env.RANKING_TIMEZONE || "Asia/Tokyo");
       if (path.startsWith("/api/admin/")) {
         return await adminApi(request, env, { json, readJson, digest, randomToken, periodStart });
       }
@@ -267,7 +264,7 @@ export default {
     }
   },
   async scheduled(_event, env) {
-    await ensureSchema(env.DB);
+    await ensureSchema(env.DB, env.RANKING_TIMEZONE || "Asia/Tokyo");
     const now = Date.now();
     await env.DB.batch([
       env.DB.prepare("DELETE FROM ranking_runs WHERE expires_at < ?").bind(now),

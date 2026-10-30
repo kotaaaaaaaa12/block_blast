@@ -46,3 +46,9 @@ CREATE TABLE IF NOT EXISTS ranking_admin_edits (
   score INTEGER NOT NULL,
   created_at INTEGER NOT NULL
 );
+CREATE TABLE IF NOT EXISTS ranking_adjustments (
+  player_id TEXT PRIMARY KEY,
+  score INTEGER NOT NULL CHECK(score >= 0),
+  cutoff_at INTEGER NOT NULL,
+  edit_id TEXT NOT NULL
+);

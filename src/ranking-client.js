@@ -117,7 +117,6 @@ async function acquireSession(target) {
 }
 export function beginRankedRun() {
   run = { key: crypto.randomUUID(), events: [], session: null, eligible: true, finished: false };
-  acquireSession(run).catch(() => { /* A finished game can acquire a session when the connection returns. */ });
 }
 export function recordHand(pieces) {
   if (!run || !run.eligible || run.finished) return;

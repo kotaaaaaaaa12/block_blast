@@ -29,24 +29,13 @@ html[data-keyboard-navigation="true"] button:focus-visible, input:focus-visible,
 .admin-form label { display: block; margin: 10px 0 6px; font-size: 14px; }
 .admin-form input, .admin-form select, .admin-score { box-sizing: border-box; min-width: 0; max-width: 100%; width: 100%; padding: 10px; font: inherit; font-size: 16px; border: 1px solid #7189bf; border-radius: 10px; background: #101e41; color: #f4f6ff; }
 .admin-form .submission-row input { flex: 1; }
-.admin-filter-row { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-bottom: 12px; }
 .admin-record { padding: 14px 0; border-top: 1px solid #ffffff25; }
 .admin-record h2 { font-size: 16px; margin: 0 0 5px; overflow-wrap: anywhere; }
-.admin-record h3 { font-size: 14px; margin: 0 0 10px; }
-.admin-player { border-top: 1px solid #ffffff25; padding: 14px 0; }
-.admin-player > summary { cursor: pointer; overflow-wrap: anywhere; }
-.admin-player > summary:focus { outline: none; }
-html[data-keyboard-navigation="true"] .admin-player > summary:focus-visible { outline: 3px solid #f7d76c; outline-offset: 3px; }
-.admin-player-name { font-weight: 700; margin-right: 10px; }
-.admin-player small { color: #b6c6ec; font-size: 11px; }
-.admin-account-meta { display: block; color: #b6c6ec; font-size: 13px; margin: 6px 0 0 18px; }
-.admin-history { padding-left: 18px; }
 .admin-record p { margin: 5px 0 10px; font-size: 12px; color: #b6c6ec; }
 .admin-record label { display: block; font-size: 13px; margin-bottom: 6px; }
 .admin-score { flex: 1; }
 #admin-status { line-height: 1.6; color: #9ee8ba; }
 #admin-confirm-text { white-space: pre-line; overflow-wrap: anywhere; line-height: 1.8; }
-@media (max-width: 360px) { .admin-filter-row { grid-template-columns: 1fr; } }
 .ranking-tabs { display: flex; gap: 6px; padding: 18px 0 8px; }
 .ranking-tabs button { flex: 1; padding-inline: 5px; font-size: 14px; }
 .ranking-tabs button[aria-pressed="true"] { background: #f7d76c; color: #1a2444; border-color: #f7d76c; }
