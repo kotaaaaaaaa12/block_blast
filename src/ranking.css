@@ -32,6 +32,15 @@ html[data-keyboard-navigation="true"] button:focus-visible, input:focus-visible,
 .admin-filter-row { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-bottom: 12px; }
 .admin-record { padding: 14px 0; border-top: 1px solid #ffffff25; }
 .admin-record h2 { font-size: 16px; margin: 0 0 5px; overflow-wrap: anywhere; }
+.admin-record h3 { font-size: 14px; margin: 0 0 10px; }
+.admin-player { border-top: 1px solid #ffffff25; padding: 14px 0; }
+.admin-player > summary { cursor: pointer; overflow-wrap: anywhere; }
+.admin-player > summary:focus { outline: none; }
+html[data-keyboard-navigation="true"] .admin-player > summary:focus-visible { outline: 3px solid #f7d76c; outline-offset: 3px; }
+.admin-player-name { font-weight: 700; margin-right: 10px; }
+.admin-player small { color: #b6c6ec; font-size: 11px; }
+.admin-account-meta { display: block; color: #b6c6ec; font-size: 13px; margin: 6px 0 0 18px; }
+.admin-history { padding-left: 18px; }
 .admin-record p { margin: 5px 0 10px; font-size: 12px; color: #b6c6ec; }
 .admin-record label { display: block; font-size: 13px; margin-bottom: 6px; }
 .admin-score { flex: 1; }

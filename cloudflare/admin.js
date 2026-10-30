@@ -81,13 +81,30 @@ export async function adminApi(request, env, api) {
       const search = (url.searchParams.get("search") || "").trim();
       const day = url.searchParams.get("day") || "";
       const page = Number(url.searchParams.get("page") || 1);
-      if (search.length > 80 || (day && !validDay(day)) || !Number.isInteger(page) || page < 1 || page > 100000) {
+      const view = url.searchParams.get("view") || "records";
+      const playerId = url.searchParams.get("playerId") || "";
+      if (search.length > 80 || (day && !validDay(day)) || !Number.isInteger(page) || page < 1 || page > 100000 ||
+          !["players", "records"].includes(view) || (playerId && !/^[a-f0-9]{64}$/.test(playerId))) {
         throw new AdminError(400, "invalidRequest");
       }
       const from = `FROM ranking_scores s LEFT JOIN ranking_players p ON p.player_id = s.player_id
         WHERE s.day >= ? AND (? = '' OR s.day = ?)
-        AND (? = '' OR instr(lower(COALESCE(p.display_name, s.display_name)), lower(?)) > 0)`;
-      const args = [start, day, day, search, search];
+        AND (? = '' OR instr(lower(COALESCE(p.display_name, s.display_name)), lower(?)) > 0)
+        AND (? = '' OR s.player_id = ?)`;
+      const args = [start, day, day, search, search, playerId, playerId];
+      if (view === "players") {
+        const result = await env.DB.prepare(`WITH daily AS (
+          SELECT s.player_id AS playerId, COALESCE(p.display_name, s.display_name) AS name,
+            s.score, s.day, s.achieved_at AS achievedAt,
+            COUNT(*) OVER (PARTITION BY s.player_id) AS recordCount,
+            ROW_NUMBER() OVER (PARTITION BY s.player_id ORDER BY s.score DESC, s.achieved_at ASC, s.day DESC) AS choice
+          ${from}
+        ) SELECT playerId, name, score, day, achievedAt, recordCount FROM daily WHERE choice = 1
+          ORDER BY score DESC, achievedAt ASC, playerId ASC LIMIT ? OFFSET ?`)
+          .bind(...args, PAGE_SIZE, (page - 1) * PAGE_SIZE).all();
+        const count = await env.DB.prepare(`SELECT COUNT(DISTINCT s.player_id) AS total ${from}`).bind(...args).first();
+        return json({ entries: result.results || [], total: count.total, page, pageSize: PAGE_SIZE, timezone });
+      }
       const result = await env.DB.prepare(`SELECT s.player_id AS playerId, s.day, s.score, s.achieved_at AS achievedAt,
         COALESCE(p.display_name, s.display_name) AS name ${from}
         ORDER BY s.day DESC, s.score DESC, s.player_id ASC LIMIT ? OFFSET ?`)

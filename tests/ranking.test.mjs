@@ -420,3 +420,41 @@ test("admin paginates and searches literal names without exposing additional rec
   assert.equal((await call('/api/admin/scores?search=%25_')).data.total, 1);
   assert.equal((await call('/api/admin/scores?search=%27%20OR%201%3D1--')).data.total, 0);
 });
+
+test("admin groups daily history by browser identity before pagination and preserves equal-name players", async () => {
+  const env = { ...environment(), ADMIN_PASSWORD: 'test-only-admin-secret-strong' };
+  await ensureSchema(env.DB);
+  const today = periodStart('today');
+  const target = 'a'.repeat(64), other = 'b'.repeat(64);
+  for (let i = 0; i < 65; i++) {
+    const day = new Date(Date.parse(today + 'T00:00:00Z') - i * 86400000).toISOString().slice(0, 10);
+    await env.DB.prepare('INSERT INTO ranking_scores VALUES (?, ?, ?, ?, ?)')
+      .bind(target, day, 'Same name', i + 1, i + 1).run();
+  }
+  await env.DB.prepare('INSERT INTO ranking_scores VALUES (?, ?, ?, ?, ?)').bind(other, today, 'Same name', 100, 1).run();
+  for (let i = 0; i < 33; i++) await env.DB.prepare('INSERT INTO ranking_scores VALUES (?, ?, ?, ?, ?)')
+    .bind(i.toString(16).padStart(64, '0'), today, `Player ${i}`, 10, i + 1).run();
+  const call = client(env); await call('/api/admin/login', { password: env.ADMIN_PASSWORD });
+  const first = (await call('/api/admin/scores?view=players')).data;
+  const second = (await call('/api/admin/scores?view=players&page=2')).data;
+  assert.equal(first.total, 35); assert.equal(first.entries.length, 30); assert.equal(second.entries.length, 5);
+  const players = [...first.entries, ...second.entries];
+  assert.equal(new Set(players.map(x => x.playerId)).size, 35);
+  assert.equal(players.filter(x => x.name === 'Same name').length, 2);
+  const grouped = players.find(x => x.playerId === target);
+  assert.equal(grouped.recordCount, 65); assert.equal(grouped.score, 65);
+  const history = (await call(`/api/admin/scores?playerId=${target}`)).data;
+  const last = (await call(`/api/admin/scores?playerId=${target}&page=3`)).data;
+  assert.equal(history.total, 65); assert.equal(history.entries.length, 30); assert.equal(last.entries.length, 5);
+  assert.ok([...history.entries, ...last.entries].every(x => x.playerId === target));
+  const daily = (await call('/api/admin/scores?view=players&period=today&search=Same')).data;
+  assert.equal(daily.total, 2);
+  assert.ok(daily.entries.every(x => x.recordCount === 1));
+  const edit = { ...history.entries[0], expectedScore: history.entries[0].score, score: 500 };
+  assert.equal((await call('/api/admin/scores', edit)).response.status, 200);
+  const updated = (await call('/api/admin/scores?view=players&search=Same')).data;
+  assert.equal(updated.total, 2);
+  assert.equal(updated.entries.find(x => x.playerId === target).score, 500);
+  assert.equal(updated.entries.find(x => x.playerId === target).recordCount, 65);
+  assert.equal((await call('/api/admin/scores?view=players&playerId=invalid')).response.status, 400);
+});

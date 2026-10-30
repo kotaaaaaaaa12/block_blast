@@ -349,7 +349,7 @@ export function initRankingUI() {
     if (event.target.closest("button")) event.preventDefault();
   }, true);
   document.addEventListener("click", event => {
-    const button = event.target.closest("button");
+    const button = event.target.closest("button, summary");
     if (button && !keyboardNavigation) button.blur();
   });
   document.addEventListener("change", event => {
